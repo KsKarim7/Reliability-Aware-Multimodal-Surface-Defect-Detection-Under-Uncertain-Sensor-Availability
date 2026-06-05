@@ -81,7 +81,7 @@ def fit(model,
     # model.build_pc_feature_gallery(pc_features1, pc_features2)
     model.build_depth_feature_gallery(depth_features1, depth_features2)
 
-    all_params = itertools.chain(model.img_prompt_learner.parameters(), model.depth_prompt_learner.parameters(), model.missing_prompt_learner.parameters())
+    all_params = itertools.chain(model.img_prompt_learner.parameters(), model.depth_prompt_learner.parameters(), model.missing_prompt_learner.parameters(), model.granular_text_guidance.parameters() if hasattr(model, 'granular_text_guidance') else [])
 
     optimizer = torch.optim.SGD(all_params, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.Epoch, eta_min=1e-5)
