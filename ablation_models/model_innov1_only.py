@@ -436,14 +436,10 @@ class Missing_PromptLearner(nn.Module):
                 common_prompt = self.common_prompt_image
             else:  # both present — Innovation 4: quality-weighted blending
                 if raw_image is not None and raw_depth is not None:
-                    w_rgb, w_dep = self.sensor_sentinel.get_quality_weights(
-                        raw_image[i], raw_depth[i], mt_i)
-                    initial_prompt_image = (w_rgb * self.image_prompt_complete +
-                                           (1.0 - w_rgb) * self.image_prompt_missing)
-                    initial_prompt_depth = (w_dep * self.depth_prompt_complete +
-                                           (1.0 - w_dep) * self.depth_prompt_missing)
-                    common_prompt = (w_rgb * self.common_prompt_image +
-                                    w_dep * self.common_prompt_depth)
+                    pass
+                    initial_prompt_image = self.image_prompt_complete
+                    initial_prompt_depth = self.depth_prompt_complete
+                    common_prompt = self.common_prompt_complete
                 else:
                     initial_prompt_image = self.image_prompt_complete
                     initial_prompt_depth = self.depth_prompt_complete
@@ -470,10 +466,10 @@ class Missing_PromptLearner(nn.Module):
                 cross_depth = self.compound_prompt_projections_depth[index](
                     self.layernorm_depth[index](torch.cat([all_prompts_image[index-1][-1], all_prompts_depth[index-1][-1]], -1)))
                 # DCP-style intra-modal self-correlation (residual addition)
-                # corr_image = self.correlated_prompt_image[index](all_prompts_image[index-1][-1])
-                # corr_depth = self.correlated_prompt_depth[index](all_prompts_depth[index-1][-1])
-                all_prompts_image[index].append(cross_image)
-                all_prompts_depth[index].append(cross_depth)
+                corr_image = self.correlated_prompt_image[index](all_prompts_image[index-1][-1])
+                corr_depth = self.correlated_prompt_depth[index](all_prompts_depth[index-1][-1])
+                all_prompts_image[index].append(cross_image + corr_image)
+                all_prompts_depth[index].append(cross_depth + corr_depth)
             all_prompts_image[0][i] = torch.cat([all_prompts_image[0][i], self.common_prompt_projection_image(common_prompt)], 0)
             all_prompts_depth[0][i] = torch.cat([all_prompts_depth[0][i], self.common_prompt_projection_depth(common_prompt)], 0)
         # generate the prompts in each layer as a tensor [B, L, C]

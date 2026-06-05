@@ -79,3 +79,70 @@ class_state_granular = {
         'fine':   ['{} with surface cut', '{} with surface hole at edge', '{} with surface contamination']
     }
 }
+
+# Eyescandies class prompts
+class_state_abnormal.update({
+    'CandyCane': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'ChocolateCookie': ['{} with defect', '{} with bump', '{} with dent', '{} with crack'],
+    'ChocolatePraline': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'Confetto': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'GummyBear': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'HazelnutTruffle': ['{} with defect', '{} with bump', '{} with dent', '{} with crack'],
+    'LicoriceSandwich': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'Lollipop': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'Marshmallow': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+    'PeppermintCandy': ['{} with defect', '{} with bump', '{} with dent', '{} with color spot'],
+})
+
+class_state_granular.update({
+    'CandyCane': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'ChocolateCookie': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with crack'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with surface crack']
+    },
+    'ChocolatePraline': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'Confetto': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'GummyBear': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'HazelnutTruffle': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with crack'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with surface crack']
+    },
+    'LicoriceSandwich': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'Lollipop': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'Marshmallow': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+    'PeppermintCandy': {
+        'coarse': ['{} with defect'],
+        'mid':    ['{} with bump', '{} with dent', '{} with color spot'],
+        'fine':   ['{} with surface bump', '{} with surface dent', '{} with color spot on surface']
+    },
+})
