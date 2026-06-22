@@ -436,14 +436,10 @@ class Missing_PromptLearner(nn.Module):
                 common_prompt = self.common_prompt_image
             else:  # both present — Innovation 4: quality-weighted blending
                 if raw_image is not None and raw_depth is not None:
-                    w_rgb, w_dep = self.sensor_sentinel.get_quality_weights(
-                        raw_image[i], raw_depth[i], mt_i)
-                    initial_prompt_image = (w_rgb * self.image_prompt_complete +
-                                           (1.0 - w_rgb) * self.image_prompt_missing)
-                    initial_prompt_depth = (w_dep * self.depth_prompt_complete +
-                                           (1.0 - w_dep) * self.depth_prompt_missing)
-                    common_prompt = (w_rgb * self.common_prompt_image +
-                                    w_dep * self.common_prompt_depth)
+                    pass
+                    initial_prompt_image = self.image_prompt_complete
+                    initial_prompt_depth = self.depth_prompt_complete
+                    common_prompt = self.common_prompt_complete
                 else:
                     initial_prompt_image = self.image_prompt_complete
                     initial_prompt_depth = self.depth_prompt_complete
@@ -453,11 +449,13 @@ class Missing_PromptLearner(nn.Module):
             base_depth = self.compound_prompt_projections_depth[0](self.layernorm_depth[0](torch.cat([initial_prompt_image, initial_prompt_depth], -1)))
             # Innovation 2: add dynamic input-conditioned residual if raw inputs available
             if raw_image is not None:
-                dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
-                base_image = base_image + dyn_image
+                pass
+                # dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
+                # base_image = base_image + dyn_image
             if raw_depth is not None:
-                dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
-                base_depth = base_depth + dyn_depth
+                pass
+                # dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
+                # base_depth = base_depth + dyn_depth
             all_prompts_image[0].append(base_image)
             all_prompts_depth[0].append(base_depth)
             # generate the prompts of the rest layers
@@ -588,7 +586,7 @@ class MISDD_MM(torch.nn.Module):
         self.depth_tokenized_abnormal_prompts_learned = self.depth_prompt_learner.tokenized_abnormal_prompts_learned
         self.depth_tokenized_abnormal_prompts = torch.cat([self.depth_tokenized_abnormal_prompts_manual, self.depth_tokenized_abnormal_prompts_learned], dim=0)
         # Innovation 3: granular text guidance module
-        self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
+        # self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
 
         self.average = torch.nn.AvgPool2d(3, stride=1) # torch.nn.AvgPool2d(1, stride=1) #
         self.resize = torch.nn.AdaptiveAvgPool2d((self.grid_size[0], self.grid_size[1]))
