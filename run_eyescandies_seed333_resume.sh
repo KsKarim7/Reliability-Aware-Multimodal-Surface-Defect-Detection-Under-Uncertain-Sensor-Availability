@@ -25,7 +25,6 @@ run_config() {
     local out_csv="${out_dir}/${name}.csv"
 
     mkdir -p "$out_dir"
-
     echo "========================================"
     echo "START eyescandies seed=${seed}: ${name}"
     echo "========================================"
@@ -39,7 +38,7 @@ run_config() {
         WANDB_MODE=offline $PYTHON train_cls.py \
             --dataset eyescandies --class_name $class \
             --missing_type both --missing_rate 0.7 \
-            --seed $seed 2>&1 | tee -a "$log_file"
+            --seed $seed --gpu-id 0 2>&1 | tee -a "$log_file"
     done
 
     if [ -f "$result_csv" ]; then
@@ -64,46 +63,12 @@ run_config() {
     echo "========================================"
 }
 
-CONFIGS=(
-    "innov1_only:/home/pub_766/MISDD-MM/ablation_models/model_innov1_only.py"
-    "innov2_only:/home/pub_766/MISDD-MM/ablation_models/model_innov2_only.py"
-    "innov3_only:/home/pub_766/MISDD-MM/ablation_models/model_innov3_only.py"
-    "innov4_only:/home/pub_766/MISDD-MM/ablation_models/model_innov4_only.py"
-    "full_model:/home/pub_766/MISDD-MM/MISDD_MM/model_full.py"
-)
-
-# Copy existing seed-111 results into seed111 folder for consistency
-mkdir -p /home/pub_766/MISDD-MM/ablation_results/eyescandies_seed111
-for name in innov1_only innov2_only innov3_only innov4_only full_model; do
-    cp /home/pub_766/MISDD-MM/ablation_results/eyescandies_${name}.csv \
-       /home/pub_766/MISDD-MM/ablation_results/eyescandies_seed111/${name}.csv 2>/dev/null
-done
-
-# ── SEED 222 — 5 configs ─────────────────────────────────────────
-echo "### SEED 222 — 5 configs ###"
-for entry in "${CONFIGS[@]}"; do
-    name="${entry%%:*}"
-    model="${entry##*:}"
-    run_config 222 "$name" "$model" "/home/pub_766/MISDD-MM/eyescandies_seed222_${name}.log"
-done
-
-# ── SEED 333 — 5 configs ─────────────────────────────────────────
-echo "### SEED 333 — 5 configs ###"
-for entry in "${CONFIGS[@]}"; do
-    name="${entry%%:*}"
-    model="${entry##*:}"
-    run_config 333 "$name" "$model" "/home/pub_766/MISDD-MM/eyescandies_seed333_${name}.log"
-done
+run_config 333 "innov4_only" "/home/pub_766/MISDD-MM/ablation_models/model_innov4_only.py" "/home/pub_766/MISDD-MM/eyescandies_seed333_innov4_resume.log"
+run_config 333 "full_model" "/home/pub_766/MISDD-MM/MISDD_MM/model_full.py" "/home/pub_766/MISDD-MM/eyescandies_seed333_full_resume.log"
 
 echo ""
-echo "########################################"
-echo "ALL EYESCANDIES MULTI-SEED RUNS COMPLETE"
-echo "########################################"
-for seed in 111 222 333; do
-    echo ""
-    echo "=== SEED $seed ==="
-    for name in innov1_only innov2_only innov3_only innov4_only full_model; do
-        echo "--- eyescandies_seed${seed}/$name ---"
-        cat /home/pub_766/MISDD-MM/ablation_results/eyescandies_seed${seed}/${name}.csv 2>/dev/null || echo "NOT FOUND"
-    done
+echo "ALL REMAINING SEED333 CONFIGS COMPLETE"
+for name in innov4_only full_model; do
+    echo "--- eyescandies_seed333/$name ---"
+    cat /home/pub_766/MISDD-MM/ablation_results/eyescandies_seed333/${name}.csv 2>/dev/null || echo "NOT FOUND"
 done

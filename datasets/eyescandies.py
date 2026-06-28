@@ -14,7 +14,7 @@ eyescandies_classes = [
     'Marshmallow', 'PeppermintCandy'
 ]
 
-EYESCANDIES_DIR = "/home/p3766/eyescandies/Eyecandies"
+EYESCANDIES_DIR = "/home/pub_766/eyescandies/Eyecandies"
 
 
 def load_eyescandies(category, k_shot, missing_type, missing_rate=0.3):

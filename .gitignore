@@ -45,3 +45,15 @@ Pointnet2_PyTorch/dist/
 
 # Terminal/job-control artifacts and lock files
 ablation.lock
+
+cuda_test.txt
+eyescandies_seed333_fullmodel_log.txt
+eyescandies_seed333_fullmodel_log2.txt
+eyescandies_seed333_fullmodel_log3.txt
+eyescandies_seed333_fullmodel_log4.txt
+eyescandies_seed333_log.txt
+eyescandies_seed333_resume_log.txt
+candycane_seed111_verify.log
+result/eyescandies/both/0.7/csv/Seed_111-results.csv
+result/eyescandies/both/0.7/csv/Seed_333-results.csv
+

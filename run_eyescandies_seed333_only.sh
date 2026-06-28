@@ -39,7 +39,7 @@ run_config() {
         WANDB_MODE=offline $PYTHON train_cls.py \
             --dataset eyescandies --class_name $class \
             --missing_type both --missing_rate 0.7 \
-            --seed $seed 2>&1 | tee -a "$log_file"
+            --seed $seed --gpu-id 0 2>&1 | tee -a "$log_file"
     done
 
     if [ -f "$result_csv" ]; then
@@ -79,13 +79,6 @@ for name in innov1_only innov2_only innov3_only innov4_only full_model; do
        /home/pub_766/MISDD-MM/ablation_results/eyescandies_seed111/${name}.csv 2>/dev/null
 done
 
-# ── SEED 222 — 5 configs ─────────────────────────────────────────
-echo "### SEED 222 — 5 configs ###"
-for entry in "${CONFIGS[@]}"; do
-    name="${entry%%:*}"
-    model="${entry##*:}"
-    run_config 222 "$name" "$model" "/home/pub_766/MISDD-MM/eyescandies_seed222_${name}.log"
-done
 
 # ── SEED 333 — 5 configs ─────────────────────────────────────────
 echo "### SEED 333 — 5 configs ###"

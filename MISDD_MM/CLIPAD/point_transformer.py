@@ -3,7 +3,7 @@ import torch.nn as nn
 import timm
 from timm.models.layers import DropPath, trunc_normal_
 from pointnet2_ops import pointnet2_utils
-from knn_cuda import KNN
+import sys; sys.path.insert(0, "/home/pub_766/MISDD-MM"); from knn_cuda_replacement import KNN
 # import KNN # Replace the upper row by svyj @ 2024-05-14
 
 
