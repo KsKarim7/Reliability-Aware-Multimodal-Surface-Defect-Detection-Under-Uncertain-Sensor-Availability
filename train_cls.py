@@ -311,7 +311,7 @@ def get_args():
     parser.add_argument("--load-memory", type=str2bool, default=True)
     parser.add_argument("--cal-pro", type=str2bool, default=False)
     parser.add_argument("--seed", type=int, default=111)
-    parser.add_argument("--gpu-id", type=int, default=1)
+    parser.add_argument("--gpu-id", type=int, default=0)
 
     # pure test
     parser.add_argument("--pure-test", type=str2bool, default=False)
