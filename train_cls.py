@@ -160,10 +160,15 @@ def fit(model,
             if hasattr(model, 'missing_prompt_learner') and hasattr(model, 'granular_text_guidance'):
                 granular_loss = model.granular_text_guidance.compute_alignment_loss(
                     all_prompts_image, all_prompts_depth)
-                loss = args.img_lambda * img_loss + args.depth_lambda * depth_loss + 0.1 * granular_loss
+                # Linear warmup: granular loss weight grows from 0 to gran_weight over training
+                # This lets the main SCL loss stabilize direction before auxiliary loss
+                # adds gradient pressure, reducing seed-to-seed interference
+                gran_weight = args.gran_weight * (epoch + 1) / args.Epoch
+                loss = args.img_lambda * img_loss + args.depth_lambda * depth_loss + gran_weight * granular_loss
             else:
                 loss = args.img_lambda * img_loss + args.depth_lambda * depth_loss
                 granular_loss = None
+                gran_weight = 0.0
 
             wandb.log({
                 'loss': loss.item(), 
@@ -173,10 +178,19 @@ def fit(model,
                 'depth_trip_loss': depth_trip_loss.item(), 
                 'img_loss_match_abnormal': img_loss_match_abnormal.item(),
                 'depth_loss_match_abnormal': depth_loss_match_abnormal.item(),
-                'granular_loss': granular_loss.item() if granular_loss is not None else 0.0
+                'granular_loss': granular_loss.item() if granular_loss is not None else 0.0,
+                'gran_weight': gran_weight,
             })
 
             loss.backward()
+            # Gradient clipping: caps gradient magnitude from Innovation 1's
+            # deep backprop chain (J-1 layers) and auxiliary losses
+            # preventing any single gradient path from dominating shared prompt params
+            torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=1.0)
+            if hasattr(model, 'granular_text_guidance'):
+                torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=1.0)
             optimizer.step()
         scheduler.step()
         model.build_img_text_feature_gallery()
@@ -345,6 +359,8 @@ def get_args():
 
     # loss hyper parameter
     parser.add_argument("--lambda1", type=float, default=0.001)
+    parser.add_argument("--gran_weight", type=float, default=0.1,
+                        help="Maximum weight for granular text guidance loss (linearly warmed up from 0)")
 
     args = parser.parse_args()
 

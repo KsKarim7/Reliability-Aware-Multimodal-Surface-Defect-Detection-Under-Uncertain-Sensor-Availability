@@ -253,30 +253,9 @@ class SensorSentinel(nn.Module):
     """
     def __init__(self, embed_dim=896):
         super().__init__()
-        # Small learned correction network per modality
-        # Takes pooled input and predicts a scalar quality correction
-        self.rgb_corrector   = nn.Sequential(
-            nn.AdaptiveAvgPool2d(2),
-            nn.Flatten(),
-            nn.Linear(3 * 4, 8),
-            nn.GELU(),
-            nn.Linear(8, 1),
-            nn.Sigmoid()
-        )
-        self.depth_corrector = nn.Sequential(
-            nn.AdaptiveAvgPool2d(2),
-            nn.Flatten(),
-            nn.Linear(3 * 4, 8),
-            nn.GELU(),
-            nn.Linear(8, 1),
-            nn.Sigmoid()
-        )
-        # Near-zero init for correctors so they start as identity
-        for m in [self.rgb_corrector, self.depth_corrector]:
-            for layer in m:
-                if isinstance(layer, nn.Linear):
-                    nn.init.xavier_uniform_(layer.weight, gain=0.01)
-                    nn.init.zeros_(layer.bias)
+        # Note: deterministic quality estimation only (no learned correctors)
+        # Quality scores derived from signal statistics, not learned networks
+        pass  # No learned parameters needed in SensorSentinel
 
     @staticmethod
     def _laplacian_variance(img_tensor):
