@@ -112,6 +112,27 @@ def fit(model,
             img_normal_text_prompt, img_abnormal_text_prompt_manual, img_abnormal_text_prompt_learned = model.img_prompt_learner()
             depth_normal_text_prompt, depth_abnormal_text_prompt_manual, depth_abnormal_text_prompt_learned = model.depth_prompt_learner()
             all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
+            # --- Gradient diagnostic: detect full_model and register hooks ---
+            _is_full_model = (
+                hasattr(model, "missing_prompt_learner") and
+                hasattr(model, "granular_text_guidance") and
+                hasattr(model.missing_prompt_learner, "dynamic_image_gen") and
+                hasattr(model.missing_prompt_learner, "correlated_prompt_image")
+            )
+            _grad_innov1_buf = [None]
+            _grad_innov2_buf = [None]
+            _hooks = []
+            if _is_full_model:
+                # Hook on layer-0 prompt stack to capture Innovation 2 gradient
+                if all_prompts_image and all_prompts_image[0].requires_grad:
+                    def _h2(grad, buf=_grad_innov2_buf):
+                        if buf[0] is None: buf[0] = grad.detach().cpu().mean(0)
+                    _hooks.append(all_prompts_image[0].register_hook(_h2))
+                # Hook on layer-1 prompt stack to capture Innovation 1 gradient
+                if len(all_prompts_image) > 1 and all_prompts_image[1].requires_grad:
+                    def _h1(grad, buf=_grad_innov1_buf):
+                        if buf[0] is None: buf[0] = grad.detach().cpu().mean(0)
+                    _hooks.append(all_prompts_image[1].register_hook(_h1))
 
             optimizer.zero_grad()
 
@@ -192,6 +213,13 @@ def fit(model,
             if hasattr(model, 'granular_text_guidance'):
                 torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=1.0)
             optimizer.step()
+            # Remove hooks after backward
+            for h in _hooks:
+                h.remove()
+        # Log gradient diagnostics once per epoch (after last batch)
+        if _is_full_model if '_is_full_model' in dir() else False:
+            _diag_csv = check_path.replace('.pt', f'_grad_diag_seed{args.seed}.csv')
+            _compute_grad_diagnostics(model, _grad_innov1_buf, _grad_innov2_buf, epoch, _diag_csv)
         scheduler.step()
         model.build_img_text_feature_gallery()
         model.build_depth_text_feature_gallery()
