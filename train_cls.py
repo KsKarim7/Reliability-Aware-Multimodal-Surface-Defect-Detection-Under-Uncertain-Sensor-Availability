@@ -35,6 +35,46 @@ def save_check_point(model, path):
     torch.save(selected_state_dict, path)
     print(f"Model saved to {path}")
 
+
+def _compute_grad_diagnostics(model, grad_innov1_buf, grad_innov2_buf, epoch, csv_path):
+    """Log per-innovation gradient diagnostics once per epoch.
+    Measures cosine similarity between Innovation 1 (CorrelatedPromptMLP)
+    and Innovation 2 (DynamicPromptGenerator) gradient contributions.
+    Only activates when full_model is running (all 4 innovations active).
+    """
+    import csv as _csv_mod, os
+    pml = model.missing_prompt_learner
+    total_grad = pml.image_prompt_complete.grad
+    if total_grad is None:
+        return
+    total_norm = total_grad.norm().item()
+    # Innovation 1 private param norms (CorrelatedPromptMLP layers)
+    innov1_norms = [p.grad.norm().item() for m in pml.correlated_prompt_image
+                    for p in m.parameters() if p.grad is not None]
+    innov1_norm = float(sum(innov1_norms) / len(innov1_norms)) if innov1_norms else 0.0
+    # Innovation 2 private param norms (DynamicPromptGenerator)
+    innov2_norms = [p.grad.norm().item() for p in pml.dynamic_image_gen.parameters()
+                    if p.grad is not None]
+    innov2_norm = float(sum(innov2_norms) / len(innov2_norms)) if innov2_norms else 0.0
+    # Cosine similarity between hooked gradient buffers
+    cos_sim = float("nan")
+    if grad_innov1_buf[0] is not None and grad_innov2_buf[0] is not None:
+        g1 = grad_innov1_buf[0].flatten().float()
+        g2 = grad_innov2_buf[0].flatten().float()
+        denom = g1.norm() * g2.norm()
+        if denom > 1e-8:
+            cos_sim = (g1 @ g2 / denom).item()
+    # Write to CSV
+    write_header = not os.path.exists(csv_path)
+    with open(csv_path, "a", newline="") as f:
+        writer = _csv_mod.writer(f)
+        if write_header:
+            writer.writerow(["epoch", "cos_sim_innov1_innov2",
+                             "innov1_grad_norm", "innov2_grad_norm",
+                             "total_prompt_grad_norm"])
+        writer.writerow([epoch, f"{cos_sim:.6f}", f"{innov1_norm:.6f}",
+                         f"{innov2_norm:.6f}", f"{total_norm:.6f}"])
+
 def fit(model,
         args,
         dataloader: DataLoader,
