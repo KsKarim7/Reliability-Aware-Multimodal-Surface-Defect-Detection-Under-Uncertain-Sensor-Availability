@@ -1,10 +1,12 @@
 #!/bin/bash
-# Called by systemd — reads which segment to run from a state file
 SEGMENT_FILE=/home/pub_766/MISDD-MM/.current_segment
-if [ ! -f "$SEGMENT_FILE" ]; then
-    echo "1" > "$SEGMENT_FILE"
+SEGMENT=$(cat "$SEGMENT_FILE" 2>/dev/null || echo "1")
+
+if [ "$SEGMENT" = "v3" ]; then
+    echo "Launching V3 full_model run at $(date)"
+    bash /home/pub_766/MISDD-MM/run_v3_fullmodel.sh
+else
+    echo "Systemd launching segment $SEGMENT at $(date)"
+    bash /home/pub_766/MISDD-MM/run_v2_segment.sh $SEGMENT
 fi
-SEGMENT=$(cat "$SEGMENT_FILE")
-echo "Systemd launching segment $SEGMENT at $(date)"
-bash /home/pub_766/MISDD-MM/run_v2_segment.sh $SEGMENT
-echo "Segment $SEGMENT finished at $(date)"
+echo "Done at $(date)"
