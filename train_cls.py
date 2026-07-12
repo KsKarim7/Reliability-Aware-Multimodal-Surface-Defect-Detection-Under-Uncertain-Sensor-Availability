@@ -244,14 +244,13 @@ def fit(model,
             })
 
             loss.backward()
-            # Gradient clipping: caps gradient magnitude from Innovation 1's
-            # deep backprop chain (J-1 layers) and auxiliary losses
-            # preventing any single gradient path from dominating shared prompt params
-            torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=1.0)
+            # scale clip by 2x for full model since multiple gradient sources combine
+            _clip_norm = args.max_norm * 2.0 if _is_full_model else args.max_norm
+            torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
+            torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
+            torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
             if hasattr(model, 'granular_text_guidance'):
-                torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
             optimizer.step()
             # Remove hooks after backward
             for h in _hooks:
@@ -429,6 +428,7 @@ def get_args():
     parser.add_argument("--lambda1", type=float, default=0.001)
     parser.add_argument("--gran_weight", type=float, default=0.1,
                         help="Maximum weight for granular text guidance loss (linearly warmed up from 0)")
+    parser.add_argument("--max_norm", type=float, default=1.0)
 
     args = parser.parse_args()
 

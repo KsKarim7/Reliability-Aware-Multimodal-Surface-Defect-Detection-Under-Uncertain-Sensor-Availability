@@ -57,3 +57,9 @@ candycane_seed111_verify.log
 result/eyescandies/both/0.7/csv/Seed_111-results.csv
 result/eyescandies/both/0.7/csv/Seed_333-results.csv
 
+utils/__pycache__/
+__pycache__/
+*.pyc
+result/mvtec3d/both/*/checkpoint/
+*.bak_pregradfix
+.current_segment
