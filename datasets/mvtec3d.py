@@ -18,12 +18,14 @@ def load_mvtec3d(category, k_shot, missing_type, missing_rate=0.3):
         tot_labels = []
         tot_types = []
 
-        defect_types = os.listdir(root_path)
+        defect_types = sorted(os.listdir(root_path))
 
         for defect_type in defect_types:
             if defect_type == 'good':
                 img_paths = glob.glob(os.path.join(root_path, defect_type) + "/rgb/*.png")
                 pc_path = glob.glob(os.path.join(root_path, defect_type) + "/xyz/*.tiff")
+                img_paths.sort()
+                pc_path.sort()
                 img_tot_paths.extend(img_paths)
                 pc_tot_paths.extend(pc_path)
                 gt_tot_paths.extend([0] * len(img_paths))

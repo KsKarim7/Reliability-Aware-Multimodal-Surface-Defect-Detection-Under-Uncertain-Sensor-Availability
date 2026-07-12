@@ -10,8 +10,6 @@ from torch.nn import functional as F
 from .ad_prompts import *
 from PIL import Image
 from scipy.ndimage import gaussian_filter
-from utils.mvtec3d_utils import organized_pc_to_unorganized_pc
-from utils.pointnet2_utils import interpolating_points
 
 from .CLIPAD import SimpleTokenizer as _Tokenizer
 
@@ -415,7 +413,6 @@ class Missing_PromptLearner(nn.Module):
                 common_prompt = self.common_prompt_image
             else:  # both present — Innovation 4: quality-weighted blending
                 if raw_image is not None and raw_depth is not None:
-                    pass
                     initial_prompt_image = self.image_prompt_complete
                     initial_prompt_depth = self.depth_prompt_complete
                     common_prompt = self.common_prompt_complete
@@ -510,12 +507,14 @@ class MISDD_MM(torch.nn.Module):
         model, _, _ = CLIPAD.create_model_and_transforms(model_name=backbone, pretrained=pretrained_dataset, precision = self.precision)
         tokenizer = CLIPAD.get_tokenizer(backbone)
         model.eval()
+        # freeze the CLIP backbone; gradients still flow through activations to the prompts
+        for p in model.parameters():
+            p.requires_grad_(False)
 
         self.img_prompt_learner = PromptLearner(n_ctx, n_pro, n_ctx_ab, n_pro_ab, class_name, model, self.precision)
         self.depth_prompt_learner = PromptLearner(n_ctx, n_pro, n_ctx_ab, n_pro_ab, class_name, model, self.precision)
         self.missing_prompt_learner = Missing_PromptLearner(self.missing_prompt_length, self.missing_prompt_depth)
         self.model = model.to(self.device)
-        self.pc_model = CLIPAD.PointTransformer(group_size=128, num_group=1024).to(self.device)
 
         self.tokenizer = tokenizer
         self.normal_text_features = None
@@ -527,10 +526,6 @@ class MISDD_MM(torch.nn.Module):
         self.register_buffer("img_feature_gallery1", img_gallery1)
         img_gallery2 = torch.zeros((self.shot*self.grid_size[0]*self.grid_size[1], self.model.visual.embed_dim))
         self.register_buffer("img_feature_gallery2", img_gallery2)
-        pc_gallery1 = torch.zeros((self.shot*self.grid_size[0]*self.grid_size[1], self.pc_model.encoder_dims))
-        self.register_buffer("pc_feature_gallery1", pc_gallery1)
-        pc_gallery2 = torch.zeros((self.shot*self.grid_size[0]*self.grid_size[1], self.pc_model.encoder_dims))
-        self.register_buffer("pc_feature_gallery2", pc_gallery2)
         depth_gallery1 = torch.zeros((self.shot*self.grid_size[0]*self.grid_size[1], self.model.visual.embed_dim))
         self.register_buffer("depth_feature_gallery1", depth_gallery1)
         depth_gallery2 = torch.zeros((self.shot*self.grid_size[0]*self.grid_size[1], self.model.visual.embed_dim))
@@ -544,8 +539,6 @@ class MISDD_MM(torch.nn.Module):
         if self.precision == 'fp16':
             self.img_feature_gallery1  = self.img_feature_gallery1.half()
             self.img_feature_gallery2  = self.img_feature_gallery2.half()
-            self.pc_feature_gallery1  = self.pc_feature_gallery1.half()
-            self.pc_feature_gallery2  = self.pc_feature_gallery2.half()
             self.depth_feature_gallery1  = self.depth_feature_gallery1.half()
             self.depth_feature_gallery2  = self.depth_feature_gallery2.half()
             self.img_text_features  = self.img_text_features.half()
@@ -567,7 +560,6 @@ class MISDD_MM(torch.nn.Module):
 
         self.average = torch.nn.AvgPool2d(3, stride=1) # torch.nn.AvgPool2d(1, stride=1) #
         self.resize = torch.nn.AdaptiveAvgPool2d((self.grid_size[0], self.grid_size[1]))
-        self.proj = nn.Parameter((self.pc_model.trans_dim ** -0.5) * torch.randn(self.pc_model.trans_dim, self.pc_model.output_dim))
 
     @torch.no_grad()
     def encode_image(self, image: torch.Tensor):
@@ -578,13 +570,13 @@ class MISDD_MM(torch.nn.Module):
         
         return [f / f.norm(dim=-1, keepdim=True) for f in image_features]
 
-    @torch.no_grad()
     def encode_image_missing(self, image: torch.Tensor, all_prompts_image: torch.Tensor, missing_type: torch.Tensor):
-
+        # no @torch.no_grad() here: the main loss must backprop through the
+        # (frozen) encoder into the missing-aware prompts
         if self.precision == "fp16":
             image = image.half()
         image_features = self.model.encode_image(image, all_prompts_image, missing_type)
-        
+
         return [f / f.norm(dim=-1, keepdim=True) for f in image_features]
 
     @torch.no_grad()
@@ -682,14 +674,6 @@ class MISDD_MM(torch.nn.Module):
         b2, n2, d2 = features2.shape
         self.depth_feature_gallery2.copy_(F.normalize(features2.reshape(-1, d2), dim=-1, eps=1e-6))
 
-    def build_pc_feature_gallery(self, features1, features2):
-
-        b1, n1, d1 = features1.shape
-        self.pc_feature_gallery1.copy_(F.normalize(features1.reshape(-1, d1), dim=-1, eps=1e-6))
-
-        b2, n2, d2 = features2.shape
-        self.pc_feature_gallery2.copy_(F.normalize(features2.reshape(-1, d2), dim=-1, eps=1e-6))
-
     def calculate_img_textual_anomaly_score(self, visual_features, task):
         # t = 100
         t = self.model.logit_scale
@@ -784,26 +768,14 @@ class MISDD_MM(torch.nn.Module):
 
         return score.reshape((N, self.grid_size[0], self.grid_size[1])).unsqueeze(1)
     
-    def calculate_pc_anomaly_score(self, pc_mid_features1, pc_mid_features2):
-        N = pc_mid_features1.shape[0]
-
-        score1, _ = (1.0 - pc_mid_features1 @ self.pc_feature_gallery1.t()).min(dim=-1)
-        score1 /= 2.0
-
-        score2, _ = (1.0 - pc_mid_features2 @ self.pc_feature_gallery2.t()).min(dim=-1)
-        score2 /= 2.0
-
-        score = torch.zeros((N, self.grid_size[0] * self.grid_size[1])) + 0.5 * (score1 + score2).cpu()
-
-        return score.reshape((N, self.grid_size[0], self.grid_size[1])).unsqueeze(1)
-
     def forward(self, args, imgs, depths, task, all_prompts_image, all_prompts_depth, missing_flag):
         
         if task == 'seg':
-            img_features, img_features_maps, img_mid_features1, img_mid_features2 = self.encode_image_missing(imgs, all_prompts_image, missing_flag)
-            
-            depth_features, depth_features_maps, depth_mid_features1, depth_mid_features2 = self.encode_image_missing(depths, all_prompts_depth, missing_flag)
-        
+            with torch.no_grad():
+                img_features, img_features_maps, img_mid_features1, img_mid_features2 = self.encode_image_missing(imgs, all_prompts_image, missing_flag)
+
+                depth_features, depth_features_maps, depth_mid_features1, depth_mid_features2 = self.encode_image_missing(depths, all_prompts_depth, missing_flag)
+
             img_textual_anomaly_map = self.calculate_img_textual_anomaly_score(img_features_maps, 'seg')
             depth_textual_anomaly_map = self.calculate_depth_textual_anomaly_score(depth_features_maps, 'seg')
 
@@ -828,9 +800,11 @@ class MISDD_MM(torch.nn.Module):
             return am_pix_list
 
         elif task == 'cls':
-            img_features, img_features_maps, img_mid_features1, img_mid_features2 = self.encode_image(imgs)
+            # use the missing-aware prompts at inference (they were previously ignored here)
+            with torch.no_grad():
+                img_features, img_features_maps, img_mid_features1, img_mid_features2 = self.encode_image_missing(imgs, all_prompts_image, missing_flag)
 
-            depth_features, depth_features_maps, depth_mid_features1, depth_mid_features2 = self.encode_image(depths)
+                depth_features, depth_features_maps, depth_mid_features1, depth_mid_features2 = self.encode_image_missing(depths, all_prompts_depth, missing_flag)
 
             img_textual_anomaly = self.calculate_img_textual_anomaly_score(img_features, 'cls')
             depth_textual_anomaly = self.calculate_depth_textual_anomaly_score(depth_features, 'cls')

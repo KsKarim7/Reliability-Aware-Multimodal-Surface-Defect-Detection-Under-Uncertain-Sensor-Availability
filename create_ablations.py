@@ -1,9 +1,11 @@
 import shutil
 import os
 
-src = '/home/p3766/MISDD-MM/MISDD_MM/model.py'
-backup = '/home/p3766/MISDD-MM/MISDD_MM/model_full.py'
-shutil.copy(src, backup)
+# model_full.py is the read-only source of truth. Never copy model.py into it:
+# model.py gets swapped by the ablation runners, and a killed run can leave an
+# ablated variant there — regenerating from it would poison every config.
+src = '/home/pub_766/MISDD-MM/MISDD_MM/model.py'
+backup = '/home/pub_766/MISDD-MM/MISDD_MM/model_full.py'
 
 def read_model():
     with open(backup, 'r') as f:
@@ -44,6 +46,18 @@ def replace_sentinel_with_fallback(lines):
             result.append(line)
         i += 1
     return result
+
+def replace_single(lines, partial, replacement):
+    result = []
+    for line in lines:
+        stripped = line.lstrip()
+        if partial in line and not stripped.startswith('#'):
+            indent = line[:len(line)-len(stripped)]
+            result.append(indent + replacement + '\n')
+        else:
+            result.append(line)
+    return result
+
 
 def comment_block(lines, start_partial, end_partial):
     result = []
@@ -95,8 +109,11 @@ def make_variant(disable_sentinel=False, disable_dynamic=False,
     if disable_correlated:
         lines = comment_single(lines, 'corr_image = self.correlated_prompt_image')
         lines = comment_single(lines, 'corr_depth = self.correlated_prompt_depth')
-        lines = comment_single(lines, 'all_prompts_image[index].append(cross_image + corr_image)')
-        lines = comment_single(lines, 'all_prompts_depth[index].append(cross_depth + corr_depth)')
+        # keep the appends (the prompt chain must stay populated) — just drop the residual
+        lines = replace_single(lines, 'all_prompts_image[index].append(cross_image + corr_image)',
+                               'all_prompts_image[index].append(cross_image)')
+        lines = replace_single(lines, 'all_prompts_depth[index].append(cross_depth + corr_depth)',
+                               'all_prompts_depth[index].append(cross_depth)')
 
     if disable_granular:
         lines = comment_single(lines, 'self.granular_text_guidance = GranularTextGuidance')
@@ -105,22 +122,24 @@ def make_variant(disable_sentinel=False, disable_dynamic=False,
     return lines
 
 configs = {
+    'baseline':    dict(disable_sentinel=True,  disable_dynamic=True,  disable_correlated=True,  disable_granular=True),
     'innov1_only': dict(disable_sentinel=True,  disable_dynamic=True,  disable_correlated=False, disable_granular=True),
     'innov2_only': dict(disable_sentinel=True,  disable_dynamic=False, disable_correlated=True,  disable_granular=True),
     'innov3_only': dict(disable_sentinel=True,  disable_dynamic=True,  disable_correlated=True,  disable_granular=False),
     'innov4_only': dict(disable_sentinel=False, disable_dynamic=True,  disable_correlated=True,  disable_granular=True),
     'innov1_3':    dict(disable_sentinel=True,  disable_dynamic=True,  disable_correlated=False, disable_granular=False),
     'innov1_4':    dict(disable_sentinel=False, disable_dynamic=True,  disable_correlated=False, disable_granular=True),
+    'innov2_4':    dict(disable_sentinel=False, disable_dynamic=False, disable_correlated=True,  disable_granular=True),
 }
 
-os.makedirs('/home/p3766/MISDD-MM/ablation_models', exist_ok=True)
+os.makedirs('/home/pub_766/MISDD-MM/ablation_models', exist_ok=True)
 for name, cfg in configs.items():
     lines = make_variant(**cfg)
-    out = f'/home/p3766/MISDD-MM/ablation_models/model_{name}.py'
+    out = f'/home/pub_766/MISDD-MM/ablation_models/model_{name}.py'
     with open(out, 'w') as f:
         f.writelines(lines)
     print(f"Created: {out}")
 
 shutil.copy(backup, src)
-print("Original model.py restored")
+print("model.py refreshed from model_full.py (source of truth)")
 print("Done")

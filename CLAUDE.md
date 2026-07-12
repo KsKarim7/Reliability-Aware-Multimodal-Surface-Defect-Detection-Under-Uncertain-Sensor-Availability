@@ -239,30 +239,47 @@ EOF
 
 ## Current Status & Remaining Work
 
+### ⚠️ V4 / PATH B PIVOT (2026-07-12) — READ THIS FIRST
+
+A full pipeline audit (`PIPELINE_AUDIT_FINDINGS.md`) found that in V1–V3 the missing-aware
+prompts received **zero gradient from the main loss** (`encode_image_missing` was
+`@torch.no_grad()`), were **ignored in the cls test path**, and the deep compound prompts
+(innovation 1) were injected into a dead tensor path. Plus: RGB↔depth pairing was shuffled
+for ~99% of MVTec3D good samples (unsorted globs), and test images were fed in BGR.
+Khalid chose **Path B: fix everything and re-run**. All fixes are applied and verified
+(see the addendum in `PIPELINE_AUDIT_FINDINGS.md` for the full fix table + evidence).
+
+**Consequences:**
+- **V1/V2/V3 results and the partial missing-rate sweep are SUPERSEDED.** Do not mix them
+  with V4 numbers. The missing-rate sweep was stopped mid-run (η=0.5 seed222).
+- The old "gradient interference" narrative (warmup, clip 2.0, grad diagnostics) described
+  auxiliary-loss dynamics only and does not carry over to V4.
+- Training now backprops through the frozen encoder: `--batch-size` default is 32
+  (~8-10 steps/epoch, ~1.25 s/step), evaluation happens **once at the final epoch**
+  (no best-epoch test-set selection), checkpoints persist all learned weights.
+- New: `ablation_models/model_baseline.py` (all innovations off) — the baseline is now
+  actually runnable. `create_ablations.py` treats `model_full.py` as read-only source.
+- Invariants to preserve: `run_v4_ablation.sh` has a `trap EXIT` restoring `model.py`;
+  never regenerate variants while `model.py` might be a swapped ablation; run
+  `/tmp/variant_forward_test.py` (structural test) before launching any campaign.
+
 ### IN PROGRESS
-- **Missing-rate sweep:** `run_missing_rate_sweep.sh` running full_model at η=0.3, 0.5, 0.9 across 3 seeds. Results go to `ablation_results_missing_rate/rate{rate}_seed{seed}_full_model.csv`. Has been interrupted repeatedly by Windows sign-outs. Resume by starting `rate_sweep` segment. Baseline for comparison: published values at η=0.3 (77.71%), 0.5 (76.95%), 0.7 (73.83%).
+- **V4 campaign:** baseline + innov1-4_only + full_model × seeds 111/222/333, η=0.7,
+  MVTec 3D-AD. Runner: `run_v4_ablation.sh <1|2|3>` (segment = seed). Dispatcher values
+  for `.current_segment`: `v4_1`, `v4_2`, `v4_3`. Results → `ablation_results_v4/seed{s}/{config}.csv`.
+  Logs → `ablation_v4_seed{s}.log`. ~2h per config-seed, ~12h per segment.
+  Resume after interruption: `echo v4_N > .current_segment && systemctl --user start misdd-training.service`
+  (per-config resume is automatic via `is_complete`).
 
 ### PENDING (priority order)
-
-**1. Plot gradient diagnostic data**
-CSVs at `result/mvtec3d/both/0.7/checkpoint/*grad_diag*.csv`. 30 files, 4503 rows.
-- Cosine similarity: ALL NAN (hooks on `all_prompts_image[0/1]` didn't fire — tensors not in backward graph that way)
-- Private param norms: VALID — 3003 nonzero values each for innov1 and innov2
-- Key finding: innov2_grad_norm > innov1_grad_norm consistently (ratio 0.48–0.70x), contradicting original hypothesis
-- Plot: gradient norm vs epoch (both innovations, 3 seeds) + ratio innov1/innov2 vs epoch
-- Script started but not yet confirmed: `gradient_diagnostic_plot.png`
-
-**2. Complete missing-rate sweep** (currently running)
-
-**3. Efficiency analysis** — parameter count, FLOPs, inference latency per config
-
-**4. Write limitations / negative-result section** — honest account of V1→V3 tradeoff
-
-**5. Dual-reporting structure** — V1 as main results table, V3 as corrected ablation in analysis
-
-**6. Eyescandies V2/V3** — lower priority, full re-run needed (~50hrs)
-
-**7. Seed111 probe** — try max_norm scaling sqrt(3)=1.73 or additional seeds (444, 555)
+1. **Finish V4 segments 1-3** (start segment 2 after 1 completes, then 3)
+2. **V4 missing-rate sweep** (η=0.3/0.5/0.9, full_model, corrected pipeline) — needs a
+   new runner or adapt `run_missing_rate_sweep.sh` with `--batch-size 32` + V4 model
+3. **Statistical validation on V4 results only** (`02_STATISTICAL_VALIDATION_PROMPT.md`)
+4. **Eyescandies V4** — full re-run on corrected pipeline
+5. **Efficiency analysis** — parameter count, FLOPs, inference latency per config
+6. **Paper rewrite around corrected architecture** — the V1–V3 story becomes a
+   "flaws found and fixed" methodology note; V4 is the primary table
 
 ---
 

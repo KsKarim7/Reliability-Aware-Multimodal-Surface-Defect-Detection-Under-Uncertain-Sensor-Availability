@@ -232,9 +232,9 @@ class ResidualAttentionBlock(nn.Module):
             if isinstance(x, list):
                 x, x_ori = x
                 x_res, x_ori_res = self.attention(self.ln_1(x_ori))
-                x_ori += x_ori_res
+                x_ori = x_ori + x_ori_res
                 x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                x += x_res  # skip ffn for the new path
+                x = x + x_res  # skip ffn for the new path
                 return [x, x_ori]
 
             # start of dual path
@@ -245,7 +245,7 @@ class ResidualAttentionBlock(nn.Module):
                     x_res, x_ori_res = x_res
                     x_ori = x + x_ori_res
                     x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                    x += x_res
+                    x = x + x_res
                     return [x, x_ori]
 
         # singl path before "d"
@@ -339,7 +339,7 @@ class CustomResidualAttentionBlock(nn.Module):
                     x_res, x_ori_res = x_res
                     x_ori = x + x_ori_res
                     x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                    x += x_res
+                    x = x + x_res
                     # print("output: ", x.shape, x_ori.shape)
                     return [x, x_ori]
             else:
@@ -354,9 +354,9 @@ class CustomResidualAttentionBlock(nn.Module):
             # print("input: ", x.shape, x_ori.shape)
             if isinstance(self.attn, Attention):
                 x_res, x_ori_res = self.attention(self.ln_1(x_ori))
-                x_ori += x_ori_res
+                x_ori = x_ori + x_ori_res
                 x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                x += x_res  # skip ffn for the new path
+                x = x + x_res  # skip ffn for the new path
                 # print("output: ", x.shape, x_ori.shape)
                 return [x, x_ori]
             else:
@@ -415,7 +415,7 @@ class CustomResidualAttentionBlock(nn.Module):
                         x_res, x_ori_res = x_res
                         x_ori = x + x_ori_res
                         x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                        x += x_res
+                        x = x + x_res
                         # print("output: ", x.shape, x_ori.shape)
                         return [[x, x_ori], compound_prompts_deeper, counter, None]
                 else:
@@ -465,12 +465,18 @@ class CustomResidualAttentionBlock(nn.Module):
                             prompts = prompts.permute(1, 0, 2)
                             # print(prompts.shape, prompts_dynamic_and_common.shape, features.shape)
                             x = torch.cat([prompts, prompts_dynamic_and_common, features], dim=0)
+                            # inject into the attended path too — previously the deep prompts
+                            # only ever landed in x, which attention never reads, so layers
+                            # 1..5 of the compound prompts had no effect on any output
+                            x_ori = torch.cat([prompts,
+                                               x_ori[self.prompt_length_half:self.prompt_length_half*3, :, :],
+                                               x_ori[self.prompt_length_half*3:, :, :]], dim=0)
                             counter += 1
                 if isinstance(self.attn, Attention):
                     x_res, x_ori_res = self.attention(self.ln_1(x_ori))
-                    x_ori += x_ori_res
+                    x_ori = x_ori + x_ori_res
                     x_ori = x_ori + self.mlp(self.ln_2(x_ori))
-                    x += x_res  # skip ffn for the new path
+                    x = x + x_res  # skip ffn for the new path
                     # print("output: ", x.shape, x_ori.shape)
                     return [[x, x_ori], compound_prompts_deeper, counter, None]
                 else:
@@ -794,17 +800,20 @@ class V2VTransformer(nn.Module):
 
         @torch.no_grad()
         def hook_t1(module, input, output):
+            # clone: later blocks modify these activations in-place, and a no_grad
+            # view of grad-mode-modified storage is illegal once training backprops
+            # through the encoder
             if len(output) == 2:
-                self.mid_feature1 = output[1].permute(1, 0, 2)[:, 1:, :]
+                self.mid_feature1 = output[1].permute(1, 0, 2)[:, 1:, :].clone()
             else:
-                self.mid_feature1 = output[0][1].permute(1, 0, 2)[:, self.prompt_length+1:, :]
+                self.mid_feature1 = output[0][1].permute(1, 0, 2)[:, self.prompt_length+1:, :].clone()
 
         @torch.no_grad()
         def hook_t2(module, input, output):
             if len(output) == 2:
-                self.mid_feature2 = output[1].permute(1, 0, 2)[:, 1:, :]
+                self.mid_feature2 = output[1].permute(1, 0, 2)[:, 1:, :].clone()
             else:
-                self.mid_feature2 = output[0][1].permute(1, 0, 2)[:, self.prompt_length+1:, :]
+                self.mid_feature2 = output[0][1].permute(1, 0, 2)[:, self.prompt_length+1:, :].clone()
 
         # old
         self.transformer.resblocks[2].register_forward_hook(hook_t1)
@@ -884,6 +893,9 @@ class V2VTransformer(nn.Module):
                 self.attn.qkv.bias.data = self.transformer.resblocks[-i].attn.in_proj_bias.clone()
                 self.attn.proj.weight.data = self.transformer.resblocks[-i].attn.out_proj.weight.clone()
                 self.attn.proj.bias.data = self.transformer.resblocks[-i].attn.out_proj.bias.clone()
+                # created at forward time, after the backbone freeze — keep frozen
+                for p in self.attn.parameters():
+                    p.requires_grad_(False)
                 self.transformer.resblocks[-i].attn = self.attn
 
         # to patches - whether to use dual patchnorm - https://arxiv.org/abs/2302.01327v1
@@ -922,8 +934,8 @@ class V2VTransformer(nn.Module):
         if all_prompts is not None:
             x = x[self.prompt_length:, :, :]
             x_ori = x_ori[self.prompt_length:, :, :]
-        # print(x.shape, x_ori.shape)
-        x[0] = x_ori[0]
+        # take the CLS row from the original path without an in-place view write
+        x = torch.cat([x_ori[0:1], x[1:]], dim=0)
         x = x.permute(1, 0, 2)  # LND -> NLD
         # x_ori = x_ori.permute(1, 0, 2)  # LND -> NLD
         # x_ori = x_ori + self.positional_embedding.to(x.dtype)

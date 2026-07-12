@@ -20,17 +20,21 @@ from tqdm import tqdm
 TASK = 'CLS'
 
 def save_check_point(model, path):
+    # persist feature galleries, text features and every learned module,
+    # so results are reproducible from the checkpoint without retraining
     selected_keys = [
         'img_feature_gallery1',
         'img_feature_gallery2',
-        'pc_feature_gallery1',
-        'pc_feature_gallery2',
         'depth_feature_gallery1',
         'depth_feature_gallery2',
-        'text_features',
+        'img_text_features',
+        'depth_text_features',
     ]
+    learned_prefixes = ('img_prompt_learner.', 'depth_prompt_learner.',
+                        'missing_prompt_learner.', 'granular_text_guidance.')
     state_dict = model.state_dict()
-    selected_state_dict = {k: v for k, v in state_dict.items() if k in selected_keys}
+    selected_state_dict = {k: v for k, v in state_dict.items()
+                           if k in selected_keys or k.startswith(learned_prefixes)}
 
     torch.save(selected_state_dict, path)
     print(f"Model saved to {path}")
@@ -128,7 +132,6 @@ def fit(model,
     criterion = nn.CrossEntropyLoss().to(device)
     criterion_tip = TripletLoss(margin=0.0)
 
-    best_result_dict = None
     for epoch in range(args.Epoch):
         # desc=f'Epoch {args.dataset}/{args.class_name}, {args.k-shot}'
         # TRAIN
@@ -152,27 +155,6 @@ def fit(model,
             img_normal_text_prompt, img_abnormal_text_prompt_manual, img_abnormal_text_prompt_learned = model.img_prompt_learner()
             depth_normal_text_prompt, depth_abnormal_text_prompt_manual, depth_abnormal_text_prompt_learned = model.depth_prompt_learner()
             all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
-            # --- Gradient diagnostic: detect full_model and register hooks ---
-            _is_full_model = (
-                hasattr(model, "missing_prompt_learner") and
-                hasattr(model, "granular_text_guidance") and
-                hasattr(model.missing_prompt_learner, "dynamic_image_gen") and
-                hasattr(model.missing_prompt_learner, "correlated_prompt_image")
-            )
-            _grad_innov1_buf = [None]
-            _grad_innov2_buf = [None]
-            _hooks = []
-            if _is_full_model:
-                # Hook on layer-0 prompt stack to capture Innovation 2 gradient
-                if all_prompts_image and all_prompts_image[0].requires_grad:
-                    def _h2(grad, buf=_grad_innov2_buf):
-                        if buf[0] is None: buf[0] = grad.detach().cpu().mean(0)
-                    _hooks.append(all_prompts_image[0].register_hook(_h2))
-                # Hook on layer-1 prompt stack to capture Innovation 1 gradient
-                if len(all_prompts_image) > 1 and all_prompts_image[1].requires_grad:
-                    def _h1(grad, buf=_grad_innov1_buf):
-                        if buf[0] is None: buf[0] = grad.detach().cpu().mean(0)
-                    _hooks.append(all_prompts_image[1].register_hook(_h1))
 
             optimizer.zero_grad()
 
@@ -244,86 +226,83 @@ def fit(model,
             })
 
             loss.backward()
-            # scale clip by 2x for full model since multiple gradient sources combine
-            _clip_norm = args.max_norm * 2.0 if _is_full_model else args.max_norm
+            # clip strength is set explicitly per run via --max_norm (no hidden config detection)
+            _clip_norm = args.max_norm
             torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
             torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
             torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
             if hasattr(model, 'granular_text_guidance'):
                 torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
             optimizer.step()
-            # Remove hooks after backward
-            for h in _hooks:
-                h.remove()
-        # Log gradient diagnostics once per epoch (after last batch)
-        if _is_full_model if '_is_full_model' in dir() else False:
+        # Log gradient diagnostics once per epoch (grads from the last batch are still present)
+        if args.grad_diag:
             _diag_csv = check_path.replace('.pt', f'_grad_diag_seed{args.seed}.csv')
-            _compute_grad_diagnostics(model, _grad_innov1_buf, _grad_innov2_buf, epoch, _diag_csv)
+            _compute_grad_diagnostics(model, [None], [None], epoch, _diag_csv)
         scheduler.step()
-        model.build_img_text_feature_gallery()
-        model.build_depth_text_feature_gallery()
 
-        # TEST
-        scores_img = []
-        score_maps = []
-        test_imgs = []
-        test_depths = []
-        gt_list = []
-        gt_mask_list = []
-        names = []
-        for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(dataloader, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, Epoch {epoch}/{args.Epoch}, testing'):
+    # training finished: build text feature galleries once, then evaluate the final model.
+    # Evaluation happens once at the final epoch only — no best-epoch selection on the
+    # test set — so the reported number is an unbiased estimate of the converged model.
+    model.build_img_text_feature_gallery()
+    model.build_depth_text_feature_gallery()
 
-            img = [model.img_transform(Image.fromarray(f.numpy())) for f in img]
-            # pc = [p for p in pc]
-            depth = [d for d in depth]
-            img = torch.stack(img, dim=0)
-            # pc = torch.stack(pc, dim=0)
-            depth = torch.stack(depth, dim=0)
+    # TEST (final model)
+    scores_img = []
+    score_maps = []
+    test_imgs = []
+    test_depths = []
+    gt_list = []
+    gt_mask_list = []
+    names = []
+    for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(dataloader, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, final testing'):
+
+        # same BGR->RGB conversion as training (test images previously stayed BGR)
+        img = [model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img]
+        depth = [d for d in depth]
+        img = torch.stack(img, dim=0)
+        depth = torch.stack(depth, dim=0)
+        with torch.no_grad():
             all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
 
-            for d, t, n, l, m in zip(img, depth, name, label, mask):
-                test_imgs += [denormalization(d.cpu().numpy())]
-                test_depths += [denormalization_depth(t.cpu().numpy())]
-                l = l.numpy()
-                m = m.numpy()
-                m[m > 0] = 1
+        for d, t, n, l, m in zip(img, depth, name, label, mask):
+            test_imgs += [denormalization(d.cpu().numpy())]
+            test_depths += [denormalization_depth(t.cpu().numpy())]
+            l = l.numpy()
+            m = m.numpy()
+            m[m > 0] = 1
 
-                names += [n]
-                gt_list += [l]
-                gt_mask_list += [m]
+            names += [n]
+            gt_list += [l]
+            gt_mask_list += [m]
 
-            img = img.to(device)
-            # pc = pc.to(device)
-            depth = depth.to(device)
-            # score_img, score_map = model(args, img, pc, 'cls')
-            score_img, score_map = model(args, img, depth, 'cls', all_prompts_image, all_prompts_depth, missing_flag)
-            score_maps += score_map
-            scores_img += score_img
+        img = img.to(device)
+        depth = depth.to(device)
+        score_img, score_map = model(args, img, depth, 'cls', all_prompts_image, all_prompts_depth, missing_flag)
+        score_maps += score_map
+        scores_img += score_img
 
-        test_imgs, test_depths, score_maps, gt_mask_list = specify_resolution(test_imgs, test_depths, score_maps, gt_mask_list, resolution=(args.resolution, args.resolution))
-        result_dict = metric_cal_img(np.array(scores_img), gt_list, np.array(score_maps))
-        try:
-            pix_result_dict = metric_cal_pix(np.array(score_maps), gt_mask_list)
-            result_dict.update(pix_result_dict)
-        except Exception as e:
-            result_dict['p_roc'] = 0.0
-            result_dict['pro_auc'] = 0.0
+    test_imgs, test_depths, score_maps, gt_mask_list = specify_resolution(test_imgs, test_depths, score_maps, gt_mask_list, resolution=(args.resolution, args.resolution))
+    result_dict = metric_cal_img(np.array(scores_img), gt_list, np.array(score_maps))
+    try:
+        pix_result_dict = metric_cal_pix(np.array(score_maps), gt_mask_list)
+        result_dict.update(pix_result_dict)
+    except Exception:
+        # keep the zero placeholders so the CSV shape is stable, but fail LOUDLY:
+        # a zero p_roc/pro_auc row must never pass silently again
+        import traceback, sys
+        print(f'!!! PIXEL METRIC FAILURE for {args.class_name} (p_roc/pro_auc set to 0.0):', file=sys.stderr)
+        traceback.print_exc()
+        result_dict['p_roc'] = 0.0
+        result_dict['pro_auc'] = 0.0
 
-        if best_result_dict is None:
-            print(f'===========================Image-AUROC: {result_dict["i_roc"]:.2f} | P-AUROC: {result_dict.get("p_roc", 0):.2f} | AUPRO: {result_dict.get("pro_auc", 0):.2f}')
-            save_check_point(model, check_path)
-            best_result_dict = result_dict
+    print(f'===========================Image-AUROC: {result_dict["i_roc"]:.2f} | P-AUROC: {result_dict.get("p_roc", 0):.2f} | AUPRO: {result_dict.get("pro_auc", 0):.2f}')
+    save_check_point(model, check_path)
 
-        elif best_result_dict['i_roc'] < result_dict['i_roc']:
-            print(f'===========================Image-AUROC: {result_dict["i_roc"]:.2f} | P-AUROC: {result_dict.get("p_roc", 0):.2f} | AUPRO: {result_dict.get("pro_auc", 0):.2f}')
-            save_check_point(model, check_path)
-            best_result_dict = result_dict
+    wandb.log({
+        'Image-AUROC': result_dict['i_roc'],
+    })
 
-        wandb.log({
-            'Image-AUROC': best_result_dict['i_roc'],
-        })
-
-    return best_result_dict
+    return result_dict
 
 
 def main(args):
@@ -386,7 +365,8 @@ def get_args():
     parser.add_argument('--img-cropsize', type=int, default=240)
     parser.add_argument('--resolution', type=int, default=400)
 
-    parser.add_argument('--batch-size', type=int, default=400)
+    # gradients now flow through the encoder, so full-dataset batches no longer fit in VRAM
+    parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--vis', type=str2bool, choices=[True, False], default=False)
     parser.add_argument("--root-dir", type=str, default="./result")
     parser.add_argument("--load-memory", type=str2bool, default=True)
@@ -429,6 +409,8 @@ def get_args():
     parser.add_argument("--gran_weight", type=float, default=0.1,
                         help="Maximum weight for granular text guidance loss (linearly warmed up from 0)")
     parser.add_argument("--max_norm", type=float, default=1.0)
+    parser.add_argument("--grad_diag", type=str2bool, default=False,
+                        help="Log per-innovation gradient norm diagnostics once per epoch")
 
     args = parser.parse_args()
 
