@@ -451,11 +451,47 @@ of truth. Recovered from git + re-applied fixes. Permanent guards now in place:
   no errors. Baseline variant smoke-tested end-to-end the same way.
 - All 9 model variants pass the structural forward/gradient test.
 
+## Post-launch discovery: text-anchor overfitting under the honest protocol
+
+The first V4 launch produced chance-level I-AUROC (49–64) despite healthy pixel metrics.
+Systematic decomposition (component AUROCs now printed at every eval — permanent
+`[component-diag]` instrumentation in `train_cls.py`) isolated it in three steps:
+
+1. **Optimization budget** — batch-32 stepping = ~450 optimizer steps vs the 50 full-batch
+   steps the protocol was tuned for. Fixed with gradient accumulation: microbatches of 32
+   accumulate into **one step per epoch** (exact V1–V3 budget, true gradients). Also moved
+   the feature-gallery build to after training using prompted features (gallery now matches
+   the test-time representation). This fully restored pixel metrics and the map component
+   (87–92 AUROC) but not the fused score.
+2. **Ruled out**: deep-prompt injection (disabling it: textual still chance), moving
+   features (visual prompts frozen at lr=0: textual still chance).
+3. **Root cause: the learned text anchors overfit with training length.** Epoch sweep on
+   bagel baseline (textual-only AUROC): ep5 = 51, ep10 = 55, **ep25 = 72**, ep50 = 52 —
+   discrimination develops, peaks ~ep25, then collapses; and at ep50 the collapsed scores
+   corrupt the harmonic fusion (fused 64 vs map 88). V1–V3 never saw this because
+   best-epoch-on-test selection cherry-picked the sweet spot; the honest final-epoch
+   protocol exposes it. **Campaign schedule set to Epoch 25** (single-class pilot,
+   disclosed), which also halves campaign runtime.
+
+Verified final config on bagel seed 111 (final-epoch, corrected pipeline, Epoch 25):
+
+| Config | I-AUROC | P-AUROC | AUPRO | vs old |
+|---|---:|---:|---:|---|
+| baseline (25 ep) | 87.40 | 93.35 | 77.77 | — (baseline never runnable before) |
+| **full_model (25 ep)** | **92.56** | **93.59** | **78.84** | V1 84.25 / V3 85.07, both best-epoch-inflated |
+
+The full-vs-baseline gap (+5.2pp) is now a real, gradient-connected innovation effect.
+Two diagnostic knobs added during the investigation remain (defaults = intended behavior):
+`--visual_prompt_lr` (separate lr for the missing-prompt learner, default = `--lr`) and
+`MISDD_XORI_INJECT=0` (env gate disabling deep-prompt injection, for ablations).
+
 ## Consequences for reporting
 
 V1/V2/V3 numbers and the partial missing-rate sweep were produced by the flawed pipeline
 and are **superseded** — they remain on disk/git as history but must not be mixed with V4
 numbers. The V1→V3 "gradient interference" narrative described dynamics of the auxiliary
 loss only and does not carry over. The V4 campaign (baseline + 4 single innovations +
-full model × seeds 111/222/333, η=0.7, MVTec 3D-AD) establishes the new primary table;
-statistical validation should run on V4 results only.
+full model × seeds 111/222/333, η=0.7, Epoch 25, MVTec 3D-AD) establishes the new primary
+table; statistical validation should run on V4 results only. Note: V3-era checkpoints for
+seed-111 bagel–dowel were overwritten by verification runs (they were gallery-only and
+their CSV results are preserved); foam–tire remain intact.

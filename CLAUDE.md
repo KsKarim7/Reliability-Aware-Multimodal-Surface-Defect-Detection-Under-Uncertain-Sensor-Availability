@@ -254,32 +254,183 @@ Khalid chose **Path B: fix everything and re-run**. All fixes are applied and ve
   with V4 numbers. The missing-rate sweep was stopped mid-run (η=0.5 seed222).
 - The old "gradient interference" narrative (warmup, clip 2.0, grad diagnostics) described
   auxiliary-loss dynamics only and does not carry over to V4.
-- Training now backprops through the frozen encoder: `--batch-size` default is 32
-  (~8-10 steps/epoch, ~1.25 s/step), evaluation happens **once at the final epoch**
-  (no best-epoch test-set selection), checkpoints persist all learned weights.
+- Training now backprops through the frozen encoder: microbatches of 32 accumulate into
+  **one optimizer step per epoch** (the V1-V3 full-batch budget), evaluation happens
+  **once at the final epoch** (no best-epoch test-set selection), checkpoints persist all
+  learned weights, and every eval prints `[component-diag]` textual-only / map-only AUROCs.
+- **Epoch 25, not 50**: the learned text anchors overfit and collapse by ep50 under the
+  final-epoch protocol (bagel pilot: textual AUROC 51→55→72→52 at ep 5/10/25/50). V1-V3's
+  best-epoch selection masked this. Verified at ep25 on bagel seed111: baseline 87.40,
+  full_model **92.56** I-AUROC (vs V1 84.25 / V3 85.07 best-epoch-inflated).
+- Diagnostic knobs (defaults = intended behavior): `--visual_prompt_lr` (separate lr for
+  missing-prompt learner) and `MISDD_XORI_INJECT=0` (disables deep-prompt injection).
 - New: `ablation_models/model_baseline.py` (all innovations off) — the baseline is now
   actually runnable. `create_ablations.py` treats `model_full.py` as read-only source.
 - Invariants to preserve: `run_v4_ablation.sh` has a `trap EXIT` restoring `model.py`;
   never regenerate variants while `model.py` might be a swapped ablation; run
   `/tmp/variant_forward_test.py` (structural test) before launching any campaign.
 
-### IN PROGRESS
-- **V4 campaign:** baseline + innov1-4_only + full_model × seeds 111/222/333, η=0.7,
-  MVTec 3D-AD. Runner: `run_v4_ablation.sh <1|2|3>` (segment = seed). Dispatcher values
-  for `.current_segment`: `v4_1`, `v4_2`, `v4_3`. Results → `ablation_results_v4/seed{s}/{config}.csv`.
-  Logs → `ablation_v4_seed{s}.log`. ~2h per config-seed, ~12h per segment.
-  Resume after interruption: `echo v4_N > .current_segment && systemctl --user start misdd-training.service`
-  (per-config resume is automatic via `is_complete`).
+### V4 COMPLETE — final table (mean I-AUROC, harmonic scoring, η=0.7, MVTec 3D-AD)
+
+| Config | S111 | S222 | S333 | Mean | map-only mean* |
+|---|---:|---:|---:|---:|---:|
+| baseline | 76.00 | 74.23 | 77.62 | 75.95 | 76.26 |
+| innov1_only | 73.98 | 70.57 | 74.33 | 72.96 | 74.99 |
+| innov2_only | 76.38 | 74.78 | 75.89 | 75.68 | 76.09 |
+| innov3_only | 75.98 | 74.23 | 77.63 | 75.95 | 76.27 |
+| innov4_only | 75.51 | 73.78 | 76.39 | 75.23 | 76.38 |
+| full_model | 72.30 | 72.75 | 74.04 | 73.03 | 74.77 |
+
+*map-only mined from `[component-diag]` lines in the campaign logs (all 180 runs).
+
+### V5 ROOT-CAUSE DIAGNOSIS (2026-07-14, from V4 checkpoint probes + log mining)
+
+Three verified defects explain why nothing beat baseline in V4:
+
+1. **Global textual branch carries no signal.** Textual AUROC ≈ 50 in all 180 runs
+   incl. baseline. Not an anchor-training failure: anchors separate as designed
+   (cos 0.96 → 0.53); the global CLS feature simply doesn't move for small defects
+   (init/trained/manual anchors all chance; normal-vs-anomaly score means differ
+   ≤ 7e-4). Patch-level textual has weak signal (56.7 mean); not competitive.
+2. **Harmonic fusion is dominated by the smaller-scale branch.** Textual scores
+   (~0.05) < map scores (~0.15), so `1/(1/map+1/txt)` injects the chance-level
+   textual noise into the fused score: −0.3pp (baseline) to −2.0pp (innov1) on
+   average, per-class up to ±10pp (rope s333 −10.3, carrot s333 +4.9).
+   **Fix: `--img_score_mode map`** (image score = map branch only).
+3. **Trailing LayerNorm in CorrelatedPromptMLP + DynamicPromptGenerator defeats
+   the near-zero init** — LN makes residual magnitude invariant to weight
+   magnitude, so the "residuals" ran at 0.8–2× the main pathway (measured on
+   trained checkpoints). This is innov1's map damage (−1.28 mean, peach s333
+   −15.3pp, seed-unstable). Causal test: `MISDD_XORI_INJECT=0` recovered peach
+   full map 80.91→84.33. **Fix: LayerScale `gamma` (init 1e-2, learnable) after
+   the LN in both modules.** `[gamma-diag]` prints learned scales per run.
+
+**Validation (seed333, map-only AUROC, 25ep):** baseline/peach replicates 86.68
+bit-exact; innov1_only/peach 71.34→86.65; full_model/peach 80.91→**87.66**
+(+0.98 over baseline, AUPRO 59.31→68.10); full_model/cookie 76.77→82.07 (parity
+with baseline 82.14). Learned gammas: layers 1-4 shrink below init (~0.005),
+layer 5 grows to ~0.12 — the optimizer wants a modest final-layer residual only.
+
+### V5 SEED 111 COMPLETE (2026-07-15) — mean I-AUROC, map scoring, η=0.7
+
+| baseline | innov1 | innov2 | innov3 | innov4 | innov2_3_4 | full_model |
+|---:|---:|---:|---:|---:|---:|---:|
+| 76.74 | 76.51 | 76.74 | 76.75 | 76.88 | 76.88 | 76.61 |
+
+All 7 configs within ±0.23pp of baseline; per-class deltas mostly <0.5pp.
+Fixes verified at campaign scale: innov1 damage gone, no instability.
+Gamma profile replicates in every innov1-bearing config: layers 1-4 suppressed
+below init (~0.005-0.01), layer 5 grows to ~0.12-0.14 (publishable measurement).
+
+### CEILING RESULT — narrowed + re-verified on key-exact checkpoints (2026-07-15)
+
+First probe was INVALID (loaded V4 ckpts lacking gamma keys into the gamma model —
+strict=False silently tamed their residuals). Rerun on V5 seed-111 full_model
+checkpoints with verified key match (210 learner keys, 14 gamma keys, 0 missing,
+0 unexpected, every class):
+
+- Four-quadrant map AUROC ({trained,init} test × {trained,init} gallery), 3 classes:
+  all combos within 1.6pp; trained-vs-trained is ≤ init-vs-init on 2 of 3 classes
+  (peach −1.56). Spearman(PP,00) ≥ 0.99. Prompt training moves features
+  substantially (~35% of spread) but rank-preservingly, and the shift is
+  defect-blind (normal vs anomalous shift norms within 6%, inconsistent sign).
+- **Correct claim: the current all-normal training objective cannot improve the
+  map branch** (best case +0.1pp, worst −1.6pp). NOT proven for anomaly-aware
+  objectives (e.g. synthetic-anomaly contrastive prompt training) — untested,
+  and the one principled route left for making prompts matter.
+- V4's innov1 per-class map swings were the untamed LayerNorm-inflated residual —
+  unintended, seed-unstable, now fixed.
+
+### FUSION + AGGREGATION AUDIT (10 classes, V5 seed111 ckpts, 2026-07-15)
+
+- img-only map 66.9, depth-only 57.6, **max fusion 76.7** — the max is doing the
+  reliability work already; streams are anti-correlated (Pearson −0.46) and
+  per-image complementary. Best fixed-α blend only 72.9.
+- **SensorSentinel map-fusion reroute is DOA**: sentinel-blend 74.2, sentinel-max
+  69.5 — both worse than plain max. Laplacian-variance/depth-density weights do
+  not predict which modality carries the defect.
+- Patch aggregation: max pooling is right (top5/20/50-mean and all-mean all worse).
+- **3-NN mean distance beats 1-NN min: 77.63 vs 76.74 (+0.89pp mean)** — eval-only
+  change, no training; per-class consistency still to be verified before adoption.
+
+### MEASUREMENT SPINE — all five load-bearing claims re-verified (2026-07-15)
+
+Every claim re-verified on exact artifacts (git worktrees of the generating code,
+key-exact checkpoint loads). Verified evidence, citable in the paper:
+
+1. **no_grad block (V1-V3):** on code @ `49f01a9` (decorator at model.py:585),
+   main loss → **0/171** missing-prompt params with grad; L_gran alone → 158/171.
+   The V1-V3 visual prompt system was trained *only* by the auxiliary loss.
+2. **Dead deep injection (V1-V3):** deep prompts ×1000 → exactly 0.000000 change
+   in every encoder output on old code (layer-0 control moves everything).
+   New code: deep prompts reach CLS + block-7 features (block-2 barely, 3e-6 —
+   innov1 affects the deeper of the two kNN feature sets).
+3. **LayerNorm inflation (sharpened):** V4 ckpts into V4 code (key-exact,
+   196 keys, 0 gamma, 0 missing): corr residual 0.007 of pathway at init but
+   0.58-2.20× trained (grew 300-600×); dyn residual 0.38-0.45 at init(!),
+   20-21× its base prompt trained. Correct mechanism: **trailing LN concentrates
+   output scale in its affine gain, decoupled from weight magnitude — near-zero
+   init has no persistence.** (For dyn even the init wasn't near-zero.)
+4. **Gamma profile:** read from all 10 V5 seed-111 ckpts: layer5 γ 0.112-0.150
+   (every class), layers 1-4 below init, dyn γ 0.005-0.010. Layer-0 corr module
+   is never exercised (γ exactly at init) — say so in the paper.
+5. **Ceiling:** quadrant test now on 6 classes (incl. weak: cable_gland, tire,
+   potato), all key-exact: PP−00 ∈ [−1.63, +0.50], mean −0.55 (trained ≤ init on
+   4/6), ρ ≥ 0.989, shifts defect-blind. Claim stands as narrowed: *the current
+   all-normal objective cannot improve the map branch.*
+
+**Provenance findings:** commit `43d6615`'s `model.py` is a swapped ablation
+variant (corr call commented out) — `model_full.py` is the true V4 model.
+V5 changes (gamma, --img_score_mode) are uncommitted working-tree state — commit
+before the next campaign. `/tmp` was wiped by a WSL reboot 2026-07-15: worktrees
+(`/tmp/old_repo` @ 49f01a9, `/tmp/v4_repo` @ 43d6615) and all probe scripts are
+disposable; recreate via `git worktree add`.
+
+### GATE PLAN (user-approved 2026-07-15): hardened-spine → stability → synthetic-anomaly → multi-dataset
+Khalid approved a four-gate plan for the strongest-paper path: (1) re-verify the
+measurement spine (DONE — see above), (2) verify+adopt 3-NN then the 3-seed
+stability table, (3) synthetic-anomaly contrastive prompt objective as a proper
+experiment (pilot gated before campaign; a negative result strengthens the
+ceiling finding), (4) Eyescandies + efficiency + missing-rate curve. Audit every
+target before fixing; key-match on every checkpoint load; flag baseline-hugging.
+
+### GATE 2 IN PROGRESS — 3-NN adopted, final-protocol campaign running
+- Per-class kNN comparison (V5 s111 ckpts, key-exact): 3-NN beats 1-NN on 8/10
+  classes (mean 76.74→77.63, +0.89; worst regression −0.28 carrot; peach +2.87).
+  5-NN mean 77.81 but larger regressions — **k=3 adopted, frozen before seeds
+  222/333** (they act as held-out confirmation of the k choice).
+- `--map_knn` arg added (train_cls.py); `_gallery_distance` in model_full.py;
+  variants regenerated; structural test recreated + all 10 PASS; 2-epoch smoke
+  test passed (bagel 85.64).
+- **Campaign `v5k_all` running since 2026-07-15 16:39**: 7 configs × seeds
+  111/222/333 (seed 111 re-run for protocol uniformity), Epoch 25,
+  `--img_score_mode map --map_knn 3`, results → `ablation_results_v5_3nn/seed{s}/`,
+  logs → `ablation_v5_3nn_seed{s}.log`, ~42h total, seeds chain automatically.
+- `ablation_results_v5/` (1-NN protocol, seed 111 only) is retained as the
+  k-selection record; do not mix with v5_3nn numbers.
 
 ### PENDING (priority order)
-1. **Finish V4 segments 1-3** (start segment 2 after 1 completes, then 3)
-2. **V4 missing-rate sweep** (η=0.3/0.5/0.9, full_model, corrected pipeline) — needs a
-   new runner or adapt `run_missing_rate_sweep.sh` with `--batch-size 32` + V4 model
-3. **Statistical validation on V4 results only** (`02_STATISTICAL_VALIDATION_PROMPT.md`)
-4. **Eyescandies V4** — full re-run on corrected pipeline
-5. **Efficiency analysis** — parameter count, FLOPs, inference latency per config
-6. **Paper rewrite around corrected architecture** — the V1–V3 story becomes a
-   "flaws found and fixed" methodology note; V4 is the primary table
+1. **Gate 2**: campaign completes → 3-seed stability table (flag baseline-hugging
+   honestly; expected per ceiling)
+2. **Gate 3**: synthetic-anomaly contrastive prompt pilot — DESIGNED
+   (`GATE3_PILOT_DESIGN.md`, pre-registered success criterion) and IMPLEMENTED
+   (`utils/syn_anomaly.py`, `--syn_anomaly/--syn_weight` in train_cls.py,
+   `[syn-diag]` train-side check, `run_gate3_pilot.sh`; compile-checked).
+   Needs after campaign: 2-epoch smoke with --syn_anomaly, then the pilot
+   (~5 GPU-h, batch 16 — optimization-neutral since one accumulated step/epoch).
+   REPORT pilot before any full campaign; negative result = ceiling extended.
+3. **Gate 4**: Eyescandies on final protocol + efficiency analysis + missing-rate curve
+4. **Paper narrative**: measurement spine (verified) + ceiling + gamma profile +
+   fusion/aggregation audits are the empirical core; git commit needed (V5 changes
+   uncommitted; 43d6615's model.py is an ablated variant — fix in next commit)
+3. **V5 missing-rate sweep** (η=0.3/0.5/0.9, full_model, fixed pipeline) — needs a
+   new runner or adapt `run_missing_rate_sweep.sh` with `--batch-size 32 --img_score_mode map`
+4. **Statistical validation on V5 results only** (`02_STATISTICAL_VALIDATION_PROMPT.md`)
+5. **Eyescandies V5** — full re-run on fixed pipeline
+6. **Efficiency analysis** — parameter count, FLOPs, inference latency per config
+7. **Paper rewrite** — V1–V4 become the "flaws found and fixed" methodology arc
+   (V4: dead gradients/pairing/BGR; V5: LayerNorm-defeated init + fusion noise);
+   V5 is the primary table
 
 ---
 

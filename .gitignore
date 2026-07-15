@@ -63,3 +63,4 @@ __pycache__/
 result/mvtec3d/both/*/checkpoint/
 *.bak_pregradfix
 .current_segment
+.claude/

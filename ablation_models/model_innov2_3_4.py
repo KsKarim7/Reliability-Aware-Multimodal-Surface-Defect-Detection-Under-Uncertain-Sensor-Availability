@@ -436,13 +436,11 @@ class Missing_PromptLearner(nn.Module):
             base_depth = self.compound_prompt_projections_depth[0](self.layernorm_depth[0](torch.cat([initial_prompt_image, initial_prompt_depth], -1)))
             # Innovation 2: add dynamic input-conditioned residual if raw inputs available
             if raw_image is not None:
-                pass
-                # dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
-                # base_image = base_image + dyn_image
+                dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
+                base_image = base_image + dyn_image
             if raw_depth is not None:
-                pass
-                # dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
-                # base_depth = base_depth + dyn_depth
+                dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
+                base_depth = base_depth + dyn_depth
             all_prompts_image[0].append(base_image)
             all_prompts_depth[0].append(base_depth)
             # generate the prompts of the rest layers
@@ -572,7 +570,7 @@ class MISDD_MM(torch.nn.Module):
         self.depth_tokenized_abnormal_prompts_learned = self.depth_prompt_learner.tokenized_abnormal_prompts_learned
         self.depth_tokenized_abnormal_prompts = torch.cat([self.depth_tokenized_abnormal_prompts_manual, self.depth_tokenized_abnormal_prompts_learned], dim=0)
         # Innovation 3: granular text guidance module
-        # self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
+        self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
 
         self.average = torch.nn.AvgPool2d(3, stride=1) # torch.nn.AvgPool2d(1, stride=1) #
         self.resize = torch.nn.AdaptiveAvgPool2d((self.grid_size[0], self.grid_size[1]))

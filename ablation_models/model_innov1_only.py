@@ -311,6 +311,9 @@ class DynamicPromptGenerator(nn.Module):
         self.fc1 = nn.Linear(spatial_feat, hidden)
         self.fc2 = nn.Linear(hidden, prompt_dim)
         self.ln  = nn.LayerNorm(prompt_dim)
+        # the trailing LayerNorm rescales to unit variance and defeats the
+        # near-zero weight init, so the residual scale must be learned explicitly
+        self.gamma = nn.Parameter(torch.full((1,), 1e-2))
         nn.init.xavier_uniform_(self.fc1.weight, gain=0.01)
         nn.init.zeros_(self.fc1.bias)
         nn.init.xavier_uniform_(self.fc2.weight, gain=0.01)
@@ -320,7 +323,7 @@ class DynamicPromptGenerator(nn.Module):
         if x.dim() == 3:
             x = x.unsqueeze(0)
         pooled = self.pool(x).flatten(1)
-        out = self.ln(self.fc2(F.gelu(self.fc1(pooled))))
+        out = self.gamma * self.ln(self.fc2(F.gelu(self.fc1(pooled))))
         return out.expand(self.prompt_length, -1)
 
 class CorrelatedPromptMLP(nn.Module):
@@ -332,13 +335,16 @@ class CorrelatedPromptMLP(nn.Module):
         self.fc1 = nn.Linear(dim, dim // reduction)
         self.fc2 = nn.Linear(dim // reduction, dim)
         self.ln  = nn.LayerNorm(dim)
+        # same LayerScale as DynamicPromptGenerator: without it the trailing
+        # LayerNorm makes this "residual" as large as the main pathway from step 0
+        self.gamma = nn.Parameter(torch.full((1,), 1e-2))
         nn.init.xavier_uniform_(self.fc1.weight, gain=0.01)
         nn.init.zeros_(self.fc1.bias)
         nn.init.xavier_uniform_(self.fc2.weight, gain=0.01)
         nn.init.zeros_(self.fc2.bias)
 
     def forward(self, x):
-        return self.ln(self.fc2(F.gelu(self.fc1(x))))
+        return self.gamma * self.ln(self.fc2(F.gelu(self.fc1(x))))
 
 
 class Missing_PromptLearner(nn.Module):
@@ -468,6 +474,9 @@ class MISDD_MM(torch.nn.Module):
         self.shot = kwargs['size']
         self.missing_prompt_length = kwargs['missing_prompt_length']
         self.missing_prompt_depth = kwargs['missing_prompt_depth']
+        # k nearest gallery patches per test patch; k=3 smooths the distance
+        # estimate (selected on seed 111, frozen before seeds 222/333)
+        self.map_knn = kwargs.get('map_knn', 1)
 
         self.out_size_h = out_size_h
         self.out_size_w = out_size_w
@@ -744,26 +753,32 @@ class MISDD_MM(torch.nn.Module):
         else:
             assert 'task error'
 
+    def _gallery_distance(self, dists):
+        if self.map_knn > 1:
+            return dists.topk(self.map_knn, dim=-1, largest=False)[0].mean(dim=-1)
+        score, _ = dists.min(dim=-1)
+        return score
+
     def calculate_img_anomaly_score(self, img_mid_features1, img_mid_features2):
         N = img_mid_features1.shape[0]
 
-        score1, _ = (1.0 - img_mid_features1 @ self.img_feature_gallery1.t()).min(dim=-1)
+        score1 = self._gallery_distance(1.0 - img_mid_features1 @ self.img_feature_gallery1.t())
         score1 /= 2.0
 
-        score2, _ = (1.0 - img_mid_features2 @ self.img_feature_gallery2.t()).min(dim=-1)
+        score2 = self._gallery_distance(1.0 - img_mid_features2 @ self.img_feature_gallery2.t())
         score2 /= 2.0
 
         score = torch.zeros((N, self.grid_size[0] * self.grid_size[1])) + 0.5 * (score1 + score2).cpu()
 
         return score.reshape((N, self.grid_size[0], self.grid_size[1])).unsqueeze(1)
-    
+
     def calculate_depth_anomaly_score(self, depth_mid_features1, depth_mid_features2):
         N = depth_mid_features1.shape[0]
 
-        score1, _ = (1.0 - depth_mid_features1 @ self.depth_feature_gallery1.t()).min(dim=-1)
+        score1 = self._gallery_distance(1.0 - depth_mid_features1 @ self.depth_feature_gallery1.t())
         score1 /= 2.0
 
-        score2, _ = (1.0 - depth_mid_features2 @ self.depth_feature_gallery2.t()).min(dim=-1)
+        score2 = self._gallery_distance(1.0 - depth_mid_features2 @ self.depth_feature_gallery2.t())
         score2 /= 2.0
 
         score = torch.zeros((N, self.grid_size[0] * self.grid_size[1])) + 0.5 * (score1 + score2).cpu()

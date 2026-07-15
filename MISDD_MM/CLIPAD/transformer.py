@@ -468,9 +468,12 @@ class CustomResidualAttentionBlock(nn.Module):
                             # inject into the attended path too — previously the deep prompts
                             # only ever landed in x, which attention never reads, so layers
                             # 1..5 of the compound prompts had no effect on any output
-                            x_ori = torch.cat([prompts,
-                                               x_ori[self.prompt_length_half:self.prompt_length_half*3, :, :],
-                                               x_ori[self.prompt_length_half*3:, :, :]], dim=0)
+                            # (MISDD_XORI_INJECT=0 disables, for diagnostics)
+                            import os as _os
+                            if _os.environ.get('MISDD_XORI_INJECT', '1') != '0':
+                                x_ori = torch.cat([prompts,
+                                                   x_ori[self.prompt_length_half:self.prompt_length_half*3, :, :],
+                                                   x_ori[self.prompt_length_half*3:, :, :]], dim=0)
                             counter += 1
                 if isinstance(self.attn, Attention):
                     x_res, x_ori_res = self.attention(self.ln_1(x_ori))

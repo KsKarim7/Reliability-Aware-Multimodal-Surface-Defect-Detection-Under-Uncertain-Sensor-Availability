@@ -1,0 +1,11 @@
+,i_roc,p_roc,pro_auc
+mvtec3d-bagel,92.56,93.59,78.84
+mvtec3d-cable_gland,79.91,70.62,57.05
+mvtec3d-carrot,74.64,91.15,74.77
+mvtec3d-cookie,74.83,84.52,54.71
+mvtec3d-dowel,76.18,90.36,76.21
+mvtec3d-foam,66.44,85.70,67.69
+mvtec3d-peach,59.18,70.84,31.43
+mvtec3d-potato,56.52,75.62,60.65
+mvtec3d-rope,86.05,98.20,87.99
+mvtec3d-tire,56.69,86.37,62.93

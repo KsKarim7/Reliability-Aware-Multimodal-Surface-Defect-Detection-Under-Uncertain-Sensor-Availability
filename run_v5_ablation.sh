@@ -1,14 +1,14 @@
 #!/bin/bash
-# V4 corrected-pipeline ablation campaign.
-# Usage: bash run_v4_ablation.sh <seed_segment>   (1=seed111, 2=seed222, 3=seed333)
+# V5 ablation campaign: V4 pipeline + two root-cause fixes.
+# Usage: bash run_v5_ablation.sh <seed_segment>   (1=seed111, 2=seed222, 3=seed333)
 #
-# V4 = Path B fixes applied:
-#   - gradients flow through the (frozen) encoder into the missing-aware prompts
-#   - deep compound prompts injected into the attended path (innovation 1 functional)
-#   - missing-aware prompts used in the cls test path
-#   - sorted RGB<->depth pairing, BGR->RGB at test time
-#   - final-epoch evaluation only (no best-epoch selection on the test set)
-#   - runnable baseline config included
+# V5 = V4 plus:
+#   - LayerScale gamma (init 1e-2) on CorrelatedPromptMLP and DynamicPromptGenerator:
+#     their trailing LayerNorm made residual magnitude invariant to weight magnitude,
+#     so the "near-zero init" never held and the residuals ran at full scale
+#   - image score = map branch only (--img_score_mode map): the global textual score
+#     is chance-level (AUROC ~50) and its smaller scale dominates the harmonic fusion
+#   - new innov2_3_4 config (full model minus innovation 1)
 
 export PATH=/usr/local/cuda-11.8/bin:/usr/bin:/bin:/home/pub_766/miniconda3/envs/ramsdd/bin:/home/pub_766/miniconda3/bin
 export CUDA_HOME=/usr/local/cuda-11.8
@@ -17,7 +17,7 @@ export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 PYTHON=/home/pub_766/miniconda3/envs/ramsdd/bin/python
 ORIGINAL=/home/pub_766/MISDD-MM/MISDD_MM/model.py
 BACKUP=/home/pub_766/MISDD-MM/MISDD_MM/model_full.py
-RESULTS_DIR=/home/pub_766/MISDD-MM/ablation_results_v4
+RESULTS_DIR=/home/pub_766/MISDD-MM/ablation_results_v5
 cd /home/pub_766/MISDD-MM
 
 # always restore the full model, even if this script is killed mid-config —
@@ -32,8 +32,8 @@ case "$SEGMENT" in
     *) echo "Unknown segment $SEGMENT"; exit 1 ;;
 esac
 
-LOG=/home/pub_766/MISDD-MM/ablation_v4_seed${SEED}.log
-echo "Starting V4 segment ${SEGMENT} (seed ${SEED}) at $(date)" | tee -a $LOG
+LOG=/home/pub_766/MISDD-MM/ablation_v5_seed${SEED}.log
+echo "Starting V5 segment ${SEGMENT} (seed ${SEED}) at $(date)" | tee -a $LOG
 
 CLASSES=(bagel cable_gland carrot cookie dowel foam peach potato rope tire)
 
@@ -67,16 +67,16 @@ run_config() {
 
     rm -f "$result_csv"
     cp "$model_src" "$ORIGINAL"
+    rm -rf /home/pub_766/MISDD-MM/MISDD_MM/__pycache__
 
     for class in "${CLASSES[@]}"; do
         echo "--- seed${SEED} ${name}: ${class} ---" | tee -a $LOG
-        # Epoch 25: the text anchors overfit and collapse by epoch 50 under the
-        # final-epoch protocol (bagel pilot: textual AUROC 72 at ep25 vs 52 at ep50)
         WANDB_MODE=offline $PYTHON train_cls.py \
             --dataset mvtec3d --class_name $class \
             --missing_type both --missing_rate 0.7 \
             --seed $SEED --gpu-id 0 \
-            --batch-size 32 --max_norm 1.0 --Epoch 25 2>&1 | tee -a $LOG
+            --batch-size 32 --max_norm 1.0 --Epoch 25 \
+            --img_score_mode map 2>&1 | tee -a $LOG
     done
 
     if [ -f "$result_csv" ]; then
@@ -105,13 +105,14 @@ run_config innov1_only /home/pub_766/MISDD-MM/ablation_models/model_innov1_only.
 run_config innov2_only /home/pub_766/MISDD-MM/ablation_models/model_innov2_only.py
 run_config innov3_only /home/pub_766/MISDD-MM/ablation_models/model_innov3_only.py
 run_config innov4_only /home/pub_766/MISDD-MM/ablation_models/model_innov4_only.py
+run_config innov2_3_4  /home/pub_766/MISDD-MM/ablation_models/model_innov2_3_4.py
 run_config full_model  /home/pub_766/MISDD-MM/MISDD_MM/model_full.py
 
-echo "V4 segment ${SEGMENT} (seed ${SEED}) COMPLETE at $(date)" | tee -a $LOG
+echo "V5 segment ${SEGMENT} (seed ${SEED}) COMPLETE at $(date)" | tee -a $LOG
 
 echo "" | tee -a $LOG
-echo "=== V4 SEED ${SEED} RESULTS ===" | tee -a $LOG
-for name in baseline innov1_only innov2_only innov3_only innov4_only full_model; do
+echo "=== V5 SEED ${SEED} RESULTS ===" | tee -a $LOG
+for name in baseline innov1_only innov2_only innov3_only innov4_only innov2_3_4 full_model; do
     csv="${RESULTS_DIR}/seed${SEED}/${name}.csv"
     if [ -f "$csv" ]; then
         mean=$(awk -F',' 'NR>1 {sum+=$2; count++} END {printf "%.2f", sum/count}' "$csv")

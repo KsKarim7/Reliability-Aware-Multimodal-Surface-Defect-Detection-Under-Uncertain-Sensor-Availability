@@ -17,12 +17,16 @@ def calculate_max_f1(gt, scores):
     return max_f1, threshold
 
 
-def metric_cal_img(img_scores, gt_list, map_scores=None):
+def metric_cal_img(img_scores, gt_list, map_scores=None, score_mode='harmonic'):
     # calculate image-level ROC AUC score
     max_map_scores = map_scores.reshape(map_scores.shape[0], -1).max(axis=1)
 
-    img_scores = 1.0 / (1.0 / max_map_scores + 1.0 / img_scores)
-    # img_scores = img_scores
+    if score_mode == 'map':
+        # map branch only: the global textual score carries no signal (AUROC ~50)
+        # and its smaller scale dominates the reciprocal sum, injecting noise
+        img_scores = max_map_scores
+    else:
+        img_scores = 1.0 / (1.0 / max_map_scores + 1.0 / img_scores)
 
     gt_list = np.asarray(gt_list, dtype=int)
     fpr, tpr, _ = roc_curve(gt_list, img_scores)

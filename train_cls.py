@@ -10,6 +10,7 @@ from utils.metrics import *
 from utils.training_utils import *
 from MISDD_MM import *
 from utils.eval_utils import *
+from utils.syn_anomaly import corrupt_batch, patch_labels, syn_patch_loss
 from torchvision import transforms
 import random
 import time
@@ -90,51 +91,26 @@ def fit(model,
     # change the model into eval mode
     model.eval_mode()
 
-    img_features1 = []
-    img_features2 = []
-    # pc_features1 = []
-    # pc_features2 = []
-    depth_features1 = []
-    depth_features2 = []
-    for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(train_data, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, building feature gallery:'):
+    # the visual (missing-aware) prompts get their own lr: at the full text-side lr,
+    # joint normal-only training collapses the text-anchor discrimination
+    _vp_lr = args.visual_prompt_lr if args.visual_prompt_lr is not None else args.lr
+    text_params = itertools.chain(model.img_prompt_learner.parameters(), model.depth_prompt_learner.parameters(), model.granular_text_guidance.parameters() if hasattr(model, 'granular_text_guidance') else [])
 
-        img = [model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img]
-        # pc = [p for p in pc]
-        depth = [d for d in depth]
-        img = torch.stack(img, dim=0).to(device)
-        # pc = torch.stack(pc, dim=0).to(device)
-        depth = torch.stack(depth, dim=0).to(device)
-        _, _, img_feature_map1, img_feature_map2 = model.encode_image(img)
-        # _, _, pc_feature_map1, pc_feature_map2 = model.encode_pc(pc)
-        _, _, depth_feature_map1, depth_feature_map2 = model.encode_image(depth)
-
-        img_features1.append(img_feature_map1)
-        img_features2.append(img_feature_map2)
-        # pc_features1.append(pc_feature_map1)
-        # pc_features2.append(pc_feature_map2)
-        depth_features1.append(depth_feature_map1)
-        depth_features2.append(depth_feature_map2)
-
-    img_features1 = torch.cat(img_features1, dim=0)
-    img_features2 = torch.cat(img_features2, dim=0)
-    # pc_features1 = torch.cat(pc_features1, dim=0)
-    # pc_features2 = torch.cat(pc_features2, dim=0)
-    depth_features1 = torch.cat(depth_features1, dim=0)
-    depth_features2 = torch.cat(depth_features2, dim=0)
-    model.build_image_feature_gallery(img_features1, img_features2)
-    # model.build_pc_feature_gallery(pc_features1, pc_features2)
-    model.build_depth_feature_gallery(depth_features1, depth_features2)
-
-    all_params = itertools.chain(model.img_prompt_learner.parameters(), model.depth_prompt_learner.parameters(), model.missing_prompt_learner.parameters(), model.granular_text_guidance.parameters() if hasattr(model, 'granular_text_guidance') else [])
-
-    optimizer = torch.optim.SGD(all_params, lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    optimizer = torch.optim.SGD([
+        {'params': list(text_params), 'lr': args.lr},
+        {'params': list(model.missing_prompt_learner.parameters()), 'lr': _vp_lr},
+    ], lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.Epoch, eta_min=1e-5)
     criterion = nn.CrossEntropyLoss().to(device)
     criterion_tip = TripletLoss(margin=0.0)
 
+    n_train = len(train_data.dataset)
     for epoch in range(args.Epoch):
-        # desc=f'Epoch {args.dataset}/{args.class_name}, {args.k-shot}'
-        # TRAIN
+        # TRAIN — one optimizer step per epoch, accumulated over microbatches.
+        # This preserves the 50-step full-batch optimization budget the protocol
+        # was tuned for; per-microbatch stepping (~9x more steps at the same lr)
+        # overtrains the text anchors until normal/abnormal discrimination inverts.
+        optimizer.zero_grad()
         for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(train_data, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, Epoch {epoch}/{args.Epoch}, training'):
             img = [model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img]
             # pc = [p for p in pc]
@@ -155,8 +131,6 @@ def fit(model,
             img_normal_text_prompt, img_abnormal_text_prompt_manual, img_abnormal_text_prompt_learned = model.img_prompt_learner()
             depth_normal_text_prompt, depth_abnormal_text_prompt_manual, depth_abnormal_text_prompt_learned = model.depth_prompt_learner()
             all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
-
-            optimizer.zero_grad()
 
             img_feature, _, _, _ = model.encode_image_missing(img, all_prompts_image, missing_flag)
             img_normal_text_features = model.encode_text_embedding(img_normal_text_prompt, model.img_tokenized_normal_prompts)
@@ -213,6 +187,24 @@ def fit(model,
                 granular_loss = None
                 gran_weight = 0.0
 
+            # synthetic-anomaly contrastive term (Gate 3): corrupted twins give the
+            # patch-textual pathway its first real anomaly signal
+            syn_loss = None
+            if args.syn_anomaly:
+                sel = torch.rand(img.shape[0]) < 0.5
+                if sel.any():
+                    s_img, s_dep, s_masks = corrupt_batch(img[sel], depth[sel])
+                    s_flags = missing_flag[sel]
+                    s_api, s_apd = model.missing_prompt_learner(s_flags, raw_image=s_img, raw_depth=s_dep)
+                    _, s_maps_i, _, _ = model.encode_image_missing(s_img, s_api, s_flags)
+                    _, s_maps_d, _, _ = model.encode_image_missing(s_dep, s_apd, s_flags)
+                    s_labels = patch_labels(s_masks, model.grid_size)
+                    syn_loss = (syn_patch_loss(s_maps_i, s_labels, img_normal_text_features_ahchor,
+                                               img_abnormal_text_features_ahchor, model.model.logit_scale)
+                                + syn_patch_loss(s_maps_d, s_labels, depth_normal_text_features_ahchor,
+                                                 depth_abnormal_text_features_ahchor, model.model.logit_scale))
+                    loss = loss + args.syn_weight * syn_loss
+
             wandb.log({
                 'loss': loss.item(), 
                 'img_loss_v2t': img_loss_v2t.item(),
@@ -223,28 +215,82 @@ def fit(model,
                 'depth_loss_match_abnormal': depth_loss_match_abnormal.item(),
                 'granular_loss': granular_loss.item() if granular_loss is not None else 0.0,
                 'gran_weight': gran_weight,
+                'syn_loss': syn_loss.item() if syn_loss is not None else 0.0,
             })
 
-            loss.backward()
-            # clip strength is set explicitly per run via --max_norm (no hidden config detection)
-            _clip_norm = args.max_norm
-            torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
-            torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
-            torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
-            if hasattr(model, 'granular_text_guidance'):
-                torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
-            optimizer.step()
-        # Log gradient diagnostics once per epoch (grads from the last batch are still present)
+            # accumulate a full-batch-equivalent gradient: weight each microbatch
+            # by its share of the training set
+            (loss * (img.shape[0] / n_train)).backward()
+
+        # clip strength is set explicitly per run via --max_norm (no hidden config detection)
+        _clip_norm = args.max_norm
+        torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
+        torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
+        torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
+        if hasattr(model, 'granular_text_guidance'):
+            torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
+        optimizer.step()
+        # Log gradient diagnostics once per epoch (grads from this epoch's step are still present)
         if args.grad_diag:
             _diag_csv = check_path.replace('.pt', f'_grad_diag_seed{args.seed}.csv')
             _compute_grad_diagnostics(model, [None], [None], epoch, _diag_csv)
         scheduler.step()
 
-    # training finished: build text feature galleries once, then evaluate the final model.
+    # report learned residual scales (gamma starts at 1e-2; where it ends up is a result)
+    try:
+        pml = model.missing_prompt_learner
+        if hasattr(pml.dynamic_image_gen, 'gamma'):
+            corr_g = [round(m.gamma.item(), 4) for m in pml.correlated_prompt_image]
+            print(f'[gamma-diag] corr_image={corr_g} '
+                  f'dyn_image={pml.dynamic_image_gen.gamma.item():.4f} '
+                  f'dyn_depth={pml.dynamic_depth_gen.gamma.item():.4f}')
+    except Exception:
+        pass
+
+    # training finished: build the feature galleries with the TRAINED prompts so the
+    # gallery and test-time representations match (test features are prompted too)
+    img_features1, img_features2 = [], []
+    depth_features1, depth_features2 = [], []
+    with torch.no_grad():
+        for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(train_data, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, building feature gallery'):
+            img = [model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img]
+            depth = [d for d in depth]
+            img = torch.stack(img, dim=0).to(device)
+            depth = torch.stack(depth, dim=0).to(device)
+            all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
+            _, _, img_feature_map1, img_feature_map2 = model.encode_image_missing(img, all_prompts_image, missing_flag)
+            _, _, depth_feature_map1, depth_feature_map2 = model.encode_image_missing(depth, all_prompts_depth, missing_flag)
+            img_features1.append(img_feature_map1)
+            img_features2.append(img_feature_map2)
+            depth_features1.append(depth_feature_map1)
+            depth_features2.append(depth_feature_map2)
+    model.build_image_feature_gallery(torch.cat(img_features1, dim=0), torch.cat(img_features2, dim=0))
+    model.build_depth_feature_gallery(torch.cat(depth_features1, dim=0), torch.cat(depth_features2, dim=0))
+
+    # build text feature galleries once, then evaluate the final model.
     # Evaluation happens once at the final epoch only — no best-epoch selection on the
     # test set — so the reported number is an unbiased estimate of the converged model.
     model.build_img_text_feature_gallery()
     model.build_depth_text_feature_gallery()
+
+    # did the synthetic objective actually learn the synthetic task? (train-side
+    # check, no test-set contact; distinguishes "didn't learn" from "didn't transfer")
+    if args.syn_anomaly:
+        with torch.no_grad():
+            (img, pc, depth, mask, label, name, img_type, missing_flag) = next(iter(train_data))
+            img = torch.stack([model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img], 0).to(device)
+            depth = torch.stack([d for d in depth], 0).to(device)
+            s_img, s_dep, s_masks = corrupt_batch(img, depth)
+            s_api, s_apd = model.missing_prompt_learner(missing_flag, raw_image=s_img, raw_depth=s_dep)
+            _, s_maps_i, _, _ = model.encode_image_missing(s_img, s_api, missing_flag)
+            s_labels = patch_labels(s_masks, model.grid_size)
+            tf = s_maps_i / s_maps_i.norm(dim=-1, keepdim=True)
+            probs = (model.model.logit_scale * tf @ model.img_text_features.t()).softmax(dim=-1)[..., 1]
+            try:
+                _auc = roc_auc_score(s_labels.cpu().numpy().reshape(-1), probs.cpu().numpy().reshape(-1))
+                print(f'[syn-diag] corrupted-vs-clean patch AUROC (train-side): {_auc*100:.2f}')
+            except ValueError:
+                print('[syn-diag] degenerate labels in diag batch')
 
     # TEST (final model)
     scores_img = []
@@ -282,7 +328,16 @@ def fit(model,
         scores_img += score_img
 
     test_imgs, test_depths, score_maps, gt_mask_list = specify_resolution(test_imgs, test_depths, score_maps, gt_mask_list, resolution=(args.resolution, args.resolution))
-    result_dict = metric_cal_img(np.array(scores_img), gt_list, np.array(score_maps))
+    # component diagnostics: the fused score hides which branch is broken
+    try:
+        _y = np.asarray(gt_list, dtype=int)
+        _text_scores = np.asarray(scores_img)
+        _map_scores = np.asarray(score_maps).reshape(len(score_maps), -1).max(axis=1)
+        print(f'[component-diag] textual-only AUROC: {roc_auc_score(_y, _text_scores)*100:.2f} | map-only AUROC: {roc_auc_score(_y, _map_scores)*100:.2f}')
+    except Exception:
+        pass
+    result_dict = metric_cal_img(np.array(scores_img), gt_list, np.array(score_maps),
+                                 score_mode=args.img_score_mode)
     try:
         pix_result_dict = metric_cal_pix(np.array(score_maps), gt_mask_list)
         result_dict.update(pix_result_dict)
@@ -401,6 +456,8 @@ def get_args():
 
     # optimizer
     parser.add_argument("--lr", type=float, default=0.02)
+    parser.add_argument("--visual_prompt_lr", type=float, default=None,
+                        help="Separate lr for the missing-aware visual prompt learner (default: same as --lr)")
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight_decay", type=float, default=0.0005)
 
@@ -411,6 +468,16 @@ def get_args():
     parser.add_argument("--max_norm", type=float, default=1.0)
     parser.add_argument("--grad_diag", type=str2bool, default=False,
                         help="Log per-innovation gradient norm diagnostics once per epoch")
+    parser.add_argument("--img_score_mode", type=str, default='harmonic', choices=['harmonic', 'map'],
+                        help="Image-level score: 'harmonic' fuses map with the global textual score "
+                             "(original protocol), 'map' uses the map branch alone")
+    parser.add_argument("--map_knn", type=int, default=1,
+                        help="k nearest gallery patches averaged per test patch in the map score "
+                             "(k=3 selected on seed 111, frozen before seeds 222/333)")
+    parser.add_argument("--syn_anomaly", type=str2bool, default=False,
+                        help="Gate 3: add the synthetic-anomaly contrastive patch objective")
+    parser.add_argument("--syn_weight", type=float, default=0.2,
+                        help="weight of the synthetic-anomaly patch loss")
 
     args = parser.parse_args()
 

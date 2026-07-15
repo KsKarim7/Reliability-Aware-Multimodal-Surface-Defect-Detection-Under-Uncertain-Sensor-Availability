@@ -130,6 +130,7 @@ configs = {
     'innov1_3':    dict(disable_sentinel=True,  disable_dynamic=True,  disable_correlated=False, disable_granular=False),
     'innov1_4':    dict(disable_sentinel=False, disable_dynamic=True,  disable_correlated=False, disable_granular=True),
     'innov2_4':    dict(disable_sentinel=False, disable_dynamic=False, disable_correlated=True,  disable_granular=True),
+    'innov2_3_4':  dict(disable_sentinel=False, disable_dynamic=False, disable_correlated=True,  disable_granular=False),
 }
 
 os.makedirs('/home/pub_766/MISDD-MM/ablation_models', exist_ok=True)
