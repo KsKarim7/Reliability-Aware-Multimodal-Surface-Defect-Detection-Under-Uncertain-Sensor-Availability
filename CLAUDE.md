@@ -366,11 +366,15 @@ key-exact checkpoint loads). Verified evidence, citable in the paper:
    New code: deep prompts reach CLS + block-7 features (block-2 barely, 3e-6 —
    innov1 affects the deeper of the two kNN feature sets).
 3. **LayerNorm inflation (sharpened):** V4 ckpts into V4 code (key-exact,
-   196 keys, 0 gamma, 0 missing): corr residual 0.007 of pathway at init but
-   0.58-2.20× trained (grew 300-600×); dyn residual 0.38-0.45 at init(!),
-   20-21× its base prompt trained. Correct mechanism: **trailing LN concentrates
-   output scale in its affine gain, decoupled from weight magnitude — near-zero
-   init has no persistence.** (For dyn even the init wasn't near-zero.)
+   196 keys, 0 gamma, 0 missing). Three distinct quantities — keep denominators
+   explicit: (A) growth across training (trained/init output norm, same batch):
+   corr **262-615×**, dyn 45-52×; (B) trained residual vs its host pathway
+   (same forward): corr 0.58-2.20×, dyn 20.1-20.6×; (C) init residual vs
+   pathway: corr 0.007-0.008, dyn 0.38-0.45 (dyn init was never near-zero).
+   Mechanism: **trailing LN concentrates output scale in its affine gain,
+   decoupled from weight magnitude — near-zero init has no persistence.**
+   Measured on peach+cookie seed333, batch of 8; ratios stable across the two
+   classes within ~10%.
 4. **Gamma profile:** read from all 10 V5 seed-111 ckpts: layer5 γ 0.112-0.150
    (every class), layers 1-4 below init, dyn γ 0.005-0.010. Layer-0 corr module
    is never exercised (γ exactly at init) — say so in the paper.
@@ -394,7 +398,26 @@ experiment (pilot gated before campaign; a negative result strengthens the
 ceiling finding), (4) Eyescandies + efficiency + missing-rate curve. Audit every
 target before fixing; key-match on every checkpoint load; flag baseline-hugging.
 
-### GATE 2 IN PROGRESS — 3-NN adopted, final-protocol campaign running
+### GATE 2 COMPLETE (2026-07-16) — 3-seed stability table, final protocol
+
+| config | s111 | s222 | s333 | mean | vs baseline |
+|---|---:|---:|---:|---:|---:|
+| baseline | 77.57 | 75.49 | 77.22 | 76.76 | — |
+| innov1_only | 77.52 | 75.48 | 77.13 | 76.71 | −0.05 |
+| innov2_only | 77.60 | 75.47 | 77.22 | 76.76 | +0.00 |
+| innov3_only | 77.58 | 75.50 | 77.22 | 76.77 | +0.00 |
+| innov4_only | 77.58 | 75.37 | 77.23 | 76.73 | −0.03 |
+| innov2_3_4 | 77.57 | 75.41 | 77.17 | 76.72 | −0.05 |
+| full_model | 77.48 | 75.45 | 77.09 | 76.67 | −0.09 |
+
+All configs within ±0.09pp of baseline (3-seed mean); largest single
+class-seed deviation −1.21 (full_model s111 cable_gland). Seed std ≈1.1
+identical across configs (seed-level, not config-level, variance). The k=3
+choice held on both held-out seeds. **Flat line = the ceiling result at
+3-seed rigor; the innovations are null on the corrected pipeline.**
+Campaign details preserved below.
+
+### GATE 2 execution notes — 3-NN adopted, final-protocol campaign
 - Per-class kNN comparison (V5 s111 ckpts, key-exact): 3-NN beats 1-NN on 8/10
   classes (mean 76.74→77.63, +0.89; worst regression −0.28 carrot; peach +2.87).
   5-NN mean 77.81 but larger regressions — **k=3 adopted, frozen before seeds
@@ -409,16 +432,78 @@ target before fixing; key-match on every checkpoint load; flag baseline-hugging.
 - `ablation_results_v5/` (1-NN protocol, seed 111 only) is retained as the
   k-selection record; do not mix with v5_3nn numbers.
 
-### PENDING (priority order)
-1. **Gate 2**: campaign completes → 3-seed stability table (flag baseline-hugging
-   honestly; expected per ceiling)
-2. **Gate 3**: synthetic-anomaly contrastive prompt pilot — DESIGNED
-   (`GATE3_PILOT_DESIGN.md`, pre-registered success criterion) and IMPLEMENTED
-   (`utils/syn_anomaly.py`, `--syn_anomaly/--syn_weight` in train_cls.py,
-   `[syn-diag]` train-side check, `run_gate3_pilot.sh`; compile-checked).
-   Needs after campaign: 2-epoch smoke with --syn_anomaly, then the pilot
-   (~5 GPU-h, batch 16 — optimization-neutral since one accumulated step/epoch).
-   REPORT pilot before any full campaign; negative result = ceiling extended.
+### GATE 3 COMPLETE (2026-07-16) — pilot NEGATIVE, ceiling extended
+
+Synthetic-anomaly contrastive pilot (peach/cookie/bagel/dowel × baseline/full_model,
+seed 111, final protocol + `--syn_anomaly --syn_weight 0.2`): baseline mean Δ −0.10,
+full_model mean Δ +0.09 vs v5k seed-111 references — **FAIL on the pre-registered
+criterion** (mean > +0.5, no class < −1.0). `[syn-diag]` 55–70: the patch-textual
+pathway only partially learned even the synthetic task; where it learned best
+(cookie ~70) the map delta was +0.14/+0.28. Global textual AUROC on bagel rose to
+~72 (vs ~56) — the objective reshapes the textual pathway but cannot reach the map
+branch. Scope limit for the paper: corruptions are crude proxies (CutPaste+blobs);
+claim is "this route, as implemented, doesn't break the ceiling."
+
+### PROVENANCE RULING (2026-07-18, Khalid): tolerance ACCEPTED, V4 code tagged
+
+- Reproduction recipe accepted at disclosed ≤2.4e-4 tolerance; peach/cookie
+  side-by-side goes in the paper appendix **as reproduction tolerance, not
+  bit-exact match**. 10-class inflation table = SUPPORTING evidence only
+  (growth-vs-init is the same phenomenon as trained/pathway ratio, which the
+  10-class γ profile corroborates from original artifacts; drop growth range
+  if contested, argument unchanged).
+- **Tagged commit `v4-campaign-code` (29251d7)** on branch
+  `v4-campaign-reconstruction`: 43d6615 + accumulation loop + model.py restored
+  from model_full.py. This is the citable hash for all V4 numbers.
+- **Provenance flags (results whose producing code is uncommitted):**
+  V5 1-NN (seed111), v5k 3-seed table, missing-rate sweep, Gate-3 pilot, and
+  the running Eyescandies campaign all ran from the uncommitted working tree
+  (behaviorally = current tree with default flags; v5k additionally spanned a
+  mid-campaign flag-gated edit — syn-anomaly module added Jul 16 while later
+  configs ran; default-off, behaviorally identical). **Recommend: commit the
+  current main tree now** to give every V5-era number one citable hash.
+- 8-class retraining under the tagged code runs at the Eyescandies seed-111→222
+  boundary (pause service, ~1.6h retrain + probes, resume — no lost work).
+
+### V4 CHECKPOINT REPRODUCTION (2026-07-16) — protocol identified, tolerance ruling PENDING
+
+v5k overwrote all V4-era checkpoints (shared paths — campaign ckpts are ephemeral!).
+Reproduction on worktree `~/v4_repro` @ 43d6615: **43d6615 steps the optimizer per
+microbatch; the campaign ran the post-commit uncommitted accumulation loop** (one
+step/epoch). With accumulation ported, cookie+peach reproduce the Gate-1c receipts:
+all claim-bearing residual norms within ±0.001, pathways within ±0.012 (max 2.4e-4
+relative; trainer is bit-stable within a context — identical back-to-back runs —
+but not across process contexts). By Khalid's bit-exact criterion this is a FAIL;
+his ruling pending: accept recipe with disclosed ≤2.4e-4 tolerance (→ retrain 8
+classes ~1.6h → 10-class inflation table) vs keep inflation measurements 2-class
+(preserved receipts only).
+
+### GATE 4: missing-rate curve + efficiency COMPLETE (2026-07-18); Eyescandies RUNNING
+
+**Missing-rate curve (mean I-AUROC over 3 seeds, final protocol):**
+
+| η | baseline | full_model |
+|---:|---:|---:|
+| 0.3 | 80.00 ± 0.52 | 80.04 ± 0.58 |
+| 0.5 | 77.84 ± 1.11 | 77.71 ± 0.95 |
+| 0.7 | 76.76 ± 1.11 | 76.67 ± 1.07 |
+| 0.9 | 75.40 ± 1.49 | 75.44 ± 1.38 |
+
+Graceful degradation (−4.6pp over 0.3→0.9); ceiling holds at every η (|Δ|≤0.13);
+seed variance grows with η. Results in `ablation_results_v5_missing_rate/`.
+Note: the machine was OFF Fri ~01:30 → Sat 13:43 mid-sweep; auto-resume re-ran
+the interrupted config; all 18 runs clean.
+
+**Efficiency (RTX 4090, batch 8, fp32):** trainable 7.29M = 3.45% of the frozen
+211.6M backbone (innov1 1.24M, innov2 0.37M, innov3 1.72M, innov4 0 — deterministic;
+compound projections 3.62M, text learners 20K). Latency 11.1 ms/img full cls path
+(~90 img/s); prompt system 1.87 ms/img = 16.9% of total.
+
+**Eyescandies campaign RUNNING since 2026-07-18 21:21** (`.current_segment`=v5ec_all):
+7 configs × seeds 111/222/333, final protocol, `run_v5_eyescandies.sh`, results →
+`ablation_results_v5_eyescandies/seed{s}/`, logs → `eyescandies_v5_seed{s}.log`,
+~2 days, seeds chain automatically. Loader pairing audited (sorted glob, derived
+depth paths — safe).
 3. **Gate 4**: Eyescandies on final protocol + efficiency analysis + missing-rate curve
 4. **Paper narrative**: measurement spine (verified) + ceiling + gamma profile +
    fusion/aggregation audits are the empirical core; git commit needed (V5 changes

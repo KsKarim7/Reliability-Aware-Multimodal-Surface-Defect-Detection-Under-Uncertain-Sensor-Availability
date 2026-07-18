@@ -6,7 +6,13 @@ SEGMENT=$(cat "$SEGMENT_FILE" 2>/dev/null || echo "1")
 # ablation model.py behind — always start from the full model
 cp /home/pub_766/MISDD-MM/MISDD_MM/model_full.py /home/pub_766/MISDD-MM/MISDD_MM/model.py
 
-if [ "$SEGMENT" = "v5k_all" ] || [ "$SEGMENT" = "v5k_1" ] || [ "$SEGMENT" = "v5k_2" ] || [ "$SEGMENT" = "v5k_3" ]; then
+if [ "$SEGMENT" = "v5ec_all" ] || [ "$SEGMENT" = "v5ec_1" ] || [ "$SEGMENT" = "v5ec_2" ] || [ "$SEGMENT" = "v5ec_3" ]; then
+    echo "Launching Eyescandies-V5 campaign (${SEGMENT#v5ec_}) at $(date)"
+    bash /home/pub_766/MISDD-MM/run_v5_eyescandies.sh "${SEGMENT#v5ec_}"
+elif [ "$SEGMENT" = "v5mr" ]; then
+    echo "Launching V5 missing-rate sweep at $(date)"
+    bash /home/pub_766/MISDD-MM/run_v5_missing_rate.sh
+elif [ "$SEGMENT" = "v5k_all" ] || [ "$SEGMENT" = "v5k_1" ] || [ "$SEGMENT" = "v5k_2" ] || [ "$SEGMENT" = "v5k_3" ]; then
     echo "Launching V5-3NN final-protocol campaign (${SEGMENT#v5k_}) at $(date)"
     bash /home/pub_766/MISDD-MM/run_v5_3nn.sh "${SEGMENT#v5k_}"
 elif [ "$SEGMENT" = "v5_1" ] || [ "$SEGMENT" = "v5_2" ] || [ "$SEGMENT" = "v5_3" ]; then

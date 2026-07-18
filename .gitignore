@@ -1,66 +1,56 @@
-﻿# Environment
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Training logs (backed up separately to Drive, not in git)
-wandb/
-
-# Model checkpoints and heavy binary artifacts (keep results CSVs, exclude weights)
-*.pt
-*.pth
-*.ckpt
-*.arrow
-
-# Raw datasets (download separately on new machine, too large for git)
-datasets/mvtec3d/
-datasets/eyescandies_data/
-
-# Logs
-*.log
-logs/
-
-# OS & Editor
-.DS_Store
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Large build files
-Pointnet2_PyTorch/build/
-Pointnet2_PyTorch/dist/
-*.whl
 
 # Conda / Pip
-*.egg-info/
-.pip/
-
+# Large build files
+# Logs
+# Model checkpoints and heavy binary artifacts (keep results CSVs, exclude weights)
+# OS & Editor
+# Raw datasets (download separately on new machine, too large for git)
 # Terminal/job-control artifacts and lock files
+# Training logs (backed up separately to Drive, not in git)
+*.arrow
+*.bak_pregradfix
+*.ckpt
+*.egg-info/
+*.log
+*.pt
+*.pth
+*.pyc
+*.pyd
+*.pyo
+*.swo
+*.swp
+*.whl
+*Zone.Identifier
+.DS_Store
+.Python
+.claude/
+.current_segment
+.idea/
+.pip/
+.vscode/
+ENV/
+Pointnet2_PyTorch/build/
+Pointnet2_PyTorch/dist/
+__pycache__/
 ablation.lock
-
+candycane_seed111_verify.log
 cuda_test.txt
+datasets/eyescandies_data/
+datasets/mvtec3d/
+env.bak/
+env/
 eyescandies_seed333_fullmodel_log.txt
 eyescandies_seed333_fullmodel_log2.txt
 eyescandies_seed333_fullmodel_log3.txt
 eyescandies_seed333_fullmodel_log4.txt
 eyescandies_seed333_log.txt
 eyescandies_seed333_resume_log.txt
-candycane_seed111_verify.log
+logs/
 result/eyescandies/both/0.7/csv/Seed_111-results.csv
 result/eyescandies/both/0.7/csv/Seed_333-results.csv
-
-utils/__pycache__/
-__pycache__/
-*.pyc
 result/mvtec3d/both/*/checkpoint/
-*.bak_pregradfix
-.current_segment
-.claude/
+utils/__pycache__/
+venv.bak/
+venv/
+wandb/
+﻿# Environment
