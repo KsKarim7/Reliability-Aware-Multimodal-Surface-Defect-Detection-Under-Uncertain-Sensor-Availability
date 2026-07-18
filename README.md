@@ -1,366 +1,393 @@
-# MISDD-MM Extended — Windows Setup Guide (via WSL2)
+# Reliability-Aware Multimodal Surface Defect Detection Under Uncertain Sensor Availability
 
-This guide walks through setting up this project from scratch on a fresh Windows
-machine. It is written from real experience setting this project up after a full
-disk failure — every step here exists because something actually broke without it.
-Follow it in order and you should avoid the issues documented below.
+Research codebase extending **MISDD-MM** for industrial surface defect detection when sensor
+data is partially missing. RGB and depth images are processed by a frozen CLIP backbone with
+prompt tuning; the system is evaluated under simulated sensor loss at rates of 30–90%.
 
----
-
-## 1. Install WSL2 with Ubuntu 22.04
-
-Open **PowerShell as Administrator** and run:
-
-```powershell
-wsl --install -d Ubuntu-22.04
-```
-
-Restart your PC when prompted. After restart, open **Ubuntu 22.04** from the Start
-menu. The first launch takes a little while — it will ask you to create a Linux
-username and password. Pick something simple; you'll type it often.
-
-**If `wsl --install` fails with "component store corrupted":** this is a Windows
-servicing issue, not a WSL issue. Run, as Administrator:
-
-```powershell
-sfc /scannow
-DISM /Online /Cleanup-Image /RestoreHealth
-```
-
-Then retry the install.
-
-**If `wsl -d Ubuntu-22.04` fails with `fopen(/etc/default/locale) failed 5` or
-similar I/O errors immediately after a working install:** check whether the
-**"Windows Subsystem for Linux"** optional Windows feature is actually enabled:
-
-```powershell
-Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
-```
-
-If it shows `Disabled`, enable it and restart:
-
-```powershell
-Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All
-```
+**Author:** Aalavi Mahin Khan, BSc, BRAC University
+**Supervisor:** F. H. Orodi
+**Datasets:** MVTec 3D-AD (10 categories), Eyecandies (10 categories)
 
 ---
 
-## 2. Verify GPU passthrough works before doing anything else
+## Read this first: what this repository actually shows
 
-Inside the Ubuntu terminal:
+This project began as "four prompt-side innovations improve multimodal defect detection." A
+full pipeline audit found that the early positive results were **measurement artifacts**. After
+rebuilding the pipeline correctly, the honest finding is:
 
-```bash
-nvidia-smi
-```
+> **Prompt-side learning cannot improve gallery-based anomaly detection under an all-normal
+> training objective.** All seven configurations — baseline, each innovation alone, and
+> combinations — converge to within ~0.1 percentage points of one another.
 
-You should see your GPU listed with driver/CUDA info. **You do not need to install
-an NVIDIA driver inside WSL** — WSL2 uses the driver already installed on the
-Windows side. If `nvidia-smi` isn't found at this path later in a fresh terminal,
-try the full path directly:
+This is not an inconclusive result. The mechanism is measured and reproducible: the anomaly
+score is a k-NN distance between test-image patch features and a gallery of normal patch
+features. Prompt training shifts **both** sides of that comparison in the same direction
+(measured shift cosine = 1.000, rank correlation ≥ 0.99), so the shift cancels in the distance.
+Every innovation in this work acts on the prompt pathway, and is therefore structurally locked
+out of the branch carrying the detection signal.
 
-```bash
-/usr/lib/wsl/lib/nvidia-smi
-```
-
----
-
-## 3. Install Miniconda
-
-```bash
-cd ~
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-bash Miniconda3-latest-Linux-x86_64.sh
-```
-
-Accept the license, accept the default install path, and **say `yes`** when asked
-to initialize conda in your shell. Then **close the terminal completely and reopen
-it** — conda will not work until you do this.
-
-```bash
-conda --version
-```
+The repository is organised to make that claim auditable: every reported number traces to a
+committed hash, and the diagnostic probes that establish the mechanism are included.
 
 ---
 
-## 4. Install CUDA Toolkit 11.8 and build tools
+## Repository layout
 
-```bash
-cd ~
-wget https://developer.download.nvidia.com/compute/cuda/11.8.0/local_installers/cuda_11.8.0_520.61.05_linux.run
-sudo sh cuda_11.8.0_520.61.05_linux.run --silent --toolkit
-
-echo 'export PATH=/usr/local/cuda-11.8/bin:$PATH' >> ~/.bashrc
-echo 'export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc
-source ~/.bashrc
-
-sudo apt update
-sudo apt install -y build-essential gcc-11 g++-11 git unzip tmux
+```
+.
+├── MISDD_MM/                    Model implementation
+│   ├── model_full.py            ← CANONICAL architecture (all 4 innovations)
+│   ├── model.py                 ← SWAP TARGET, see warning below
+│   ├── ad_prompts.py            Text prompt templates (20 classes)
+│   ├── CLIPAD/                  Frozen CLIP backbone
+│   │   └── transformer.py       Modified: in-place ops made autograd-safe
+│   └── model_backup_*.py        Dev snapshots (unused, historical)
+│
+├── ablation_models/             9 standalone model variants
+│   ├── model_baseline.py        All innovations disabled
+│   ├── model_innov{1,2,3,4}_only.py
+│   ├── model_innov{1_3,1_4,2_4,2_3_4}.py
+│   └── *.py.bak                 Cruft, ignore
+│
+├── datasets/
+│   ├── mvtec3d.py               MVTec 3D-AD loader
+│   ├── eyescandies.py           Eyecandies loader
+│   ├── dataset.py               Depth derivation from point cloud Z-channel
+│   └── seeds_mvtec3d/           Fixed missing-modality masks per seed
+│
+├── utils/
+│   ├── metrics.py               Scoring: k-NN gallery distance, score fusion
+│   ├── syn_anomaly.py           CutPaste / Perlin corruptions (Gate-3 experiment)
+│   ├── eval_utils.py            AUROC / AUPRO computation
+│   └── csv_utils.py             Result writing
+│
+├── train_cls.py                 ← THE entry point; produced every reported number
+├── create_ablations.py          Regenerates ablation_models/ from model_full.py
+├── launch_segment.sh            systemd dispatcher (reads .current_segment)
+│
+├── run_v5_3nn.sh                ← Current main campaign
+├── run_v5_missing_rate.sh       ← Robustness curve
+├── run_v5_eyescandies.sh        ← Second dataset
+├── run_gate3_pilot.sh           ← Synthetic-anomaly experiment
+├── run_v4_repro.sh              V4 checkpoint reconstruction
+├── run_*.sh (~25 others)        Superseded, kept for history
+│
+├── ablation_results*/           Results by generation, see table below
+├── result/                      Raw per-run output CSVs
+├── result_diag*/                Diagnostic probe outputs
+│
+├── CLAUDE.md                    Working context file (detailed internal notes)
+├── PIPELINE_AUDIT_FINDINGS.md   Formal audit report
+├── GATE3_PILOT_DESIGN.md        Pre-registered experiment design
+├── RESULTS.md                   ⚠ STALE — V1–V3 era, superseded
+│
+├── Pointnet2_PyTorch/           Vendored dependency (point-cloud path is DEAD, see below)
+├── static/, index.html          Project-page template, unused
+└── test_cls.py, test_seg.py,
+    train_seg.py                 ⚠ DEAD CODE — stale signatures, would crash
 ```
 
-Verify: `nvcc --version` should report release 11.8.
+### ⚠ `model.py` is a swap target, not the architecture
+
+`run_*.sh` scripts copy a file from `ablation_models/` over `MISDD_MM/model.py` before each
+training run, and a `trap EXIT` restores it afterwards. At any moment `model.py` may be an
+ablation variant. **Read `model_full.py` for the reference architecture.** Never commit
+`model.py` while a campaign is running — verify first:
+
+```bash
+diff MISDD_MM/model.py MISDD_MM/model_full.py   # must be empty
+```
+
+### ⚠ The point-cloud path is dead
+
+`Pointnet2_PyTorch/` is vendored and `MISDD_MM/model.py` still instantiates a
+`PointTransformer`, but **no `encode_pc` method exists in any model variant**, and every
+point-cloud line in the training and evaluation scripts is commented out. Depth is derived
+from the point cloud's Z-channel and processed as a 2D image through frozen CLIP. The system
+is **RGB + depth**, not three-modality.
 
 ---
 
-## 5. Clone the repo and set up the conda environment
+## Results directories, by generation
 
-```bash
-git clone https://github.com/KsKarim7/Reliability-Aware-Multimodal-Surface-Defect-Detection-Under-Uncertain-Sensor-Availability.git MISDD-MM
-cd MISDD-MM
-```
+Each directory is a distinct pipeline generation, kept rather than overwritten so the audit
+trail survives. **Later supersedes earlier.**
 
-```bash
-conda create -n misdd_mm python=3.11 -y
-conda activate misdd_mm
-pip install torch==2.2.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+| Directory | Generation | Status |
+|---|---|---|
+| `ablation_results/` | V1 — original, pre-audit | ❌ Artifacts |
+| `ablation_results_v2/` | V2 — uniform gradient clipping | ❌ Artifacts |
+| `ablation_results_v3/` | V3 — config-aware clipping | ❌ Artifacts |
+| `ablation_results_v4/` | V4 — first architecturally correct run | ⚠ Superseded |
+| `ablation_results_v5/` | V5 — LayerScale fix, 1-NN scoring | ⚠ k-selection record |
+| `ablation_results_v5_3nn/` | **V5 final protocol** | ✅ **Current** |
+| `ablation_results_v5_missing_rate/` | Robustness curve, η = 0.3 / 0.5 / 0.9 | ✅ Current |
+| `ablation_results_missing_rate/` | Pre-V4 sweep, incomplete | ❌ Superseded |
 
-**Immediately pin NumPy below version 2** — this project's compiled extensions and
-several dependencies (OpenCV, scikit-image) are not compatible with NumPy 2.x, and
-several packages installed later will silently pull NumPy 2.x back in as a
-dependency. Re-run this command any time NumPy drifts:
-
-```bash
-pip install "numpy<2" --force-reinstall
-```
-
-Install the remaining dependencies:
-
-```bash
-pip install pandas "opencv-python<4.10" matplotlib seaborn scipy loguru \
-    open_clip_torch timm einops wandb pyyaml scikit-image scikit-learn \
-    tifffile imageio ninja
-pip install "numpy<2" --force-reinstall
-```
-
-Run this check after every batch install — it's the fastest way to catch a silent
-NumPy/OpenCV version conflict before it wastes hours of training time:
-
-```bash
-python -c "
-import numpy; print('NumPy:', numpy.__version__)
-import cv2; print('OpenCV:', cv2.__version__)
-import torch; print('PyTorch:', torch.__version__, '| CUDA:', torch.cuda.is_available())
-"
-```
-
-`NumPy` must read `1.26.x`. If it ever shows `2.x`, run
-`pip install "numpy<2" --force-reinstall` again — most likely whatever you just
-installed (commonly `opencv-python` or `pandas`) pulled in NumPy 2 as a dependency.
+CSV format: one row per object category, columns `class, I-AUROC, P-AUROC, AUPRO`.
 
 ---
 
-## 6. Build the Pointnet2 CUDA extension
+## Headline results
 
-```bash
-cd ~/MISDD-MM/Pointnet2_PyTorch/pointnet2_ops_lib
-export TORCH_CUDA_ARCH_LIST="8.9"   # RTX 40-series. Use "8.6" for A6000/30-series.
-pip install -e . --no-build-isolation
-```
+### Final protocol (V5 + LayerScale + map scoring + 3-NN), η = 0.7, MVTec 3D-AD
 
-The `--no-build-isolation` flag is required — without it, pip builds this package
-in a sandboxed environment that can't see your already-installed PyTorch, and the
-build fails with `ModuleNotFoundError: No module named 'torch'` even though PyTorch
-is clearly installed.
+Seed 111, mean I-AUROC over 10 categories:
 
-Make the architecture flag permanent:
+| Config | I-AUROC | vs baseline |
+|---|---:|---:|
+| baseline | 77.57 | — |
+| innov1_only | 77.52 | −0.05 |
+| innov2_only | 77.60 | +0.03 |
+| innov3_only | 77.58 | +0.01 |
+| innov4_only | 77.58 | +0.01 |
+| innov2_3_4 | 77.57 | 0.00 |
+| full_model | 77.48 | −0.09 |
 
-```bash
-echo 'export TORCH_CUDA_ARCH_LIST="8.9"' >> ~/.bashrc
-```
+Total spread: **0.12 pp**, against seed-to-seed variation on a single config of ~1.5 pp. The
+configurations are statistically indistinguishable. Seeds 222 and 333 are in
+`ablation_results_v5_3nn/` (see repository for per-class values).
 
-Verify:
+### Scoring improvement (evaluation-only, no retraining)
 
-```bash
-cd ~/MISDD-MM
-python -c "from pointnet2_ops import pointnet2_utils; print('OK')"
-```
+Replacing 1-NN minimum gallery distance with 3-NN mean distance: **+0.89 pp** mean,
+8/10 categories improve. `k = 3` was selected on seed 111 alone and frozen before seeds
+222/333 ran, so those seeds are held-out confirmation.
 
----
+| Class | 1-NN | 3-NN | Δ |
+|---|---:|---:|---:|
+| bagel | 87.45 | 87.40 | −0.05 |
+| cable_gland | 80.30 | 81.34 | +1.04 |
+| carrot | 79.52 | 79.24 | −0.28 |
+| cookie | 85.09 | 86.30 | +1.21 |
+| dowel | 79.88 | 80.36 | +0.48 |
+| foam | 70.88 | 71.75 | +0.87 |
+| peach | 78.92 | 81.79 | +2.87 |
+| potato | 54.55 | 56.23 | +1.68 |
+| rope | 86.23 | 86.78 | +0.54 |
+| tire | 64.55 | 65.10 | +0.55 |
+| **mean** | **76.74** | **77.63** | **+0.89** |
 
-## 7. A known dependency that no longer exists — `knn_cuda`
+### Robustness under sensor loss
 
-The original code imports a package called `knn_cuda` from
-`github.com/unlimblue/KNN_CUDA`. **That GitHub repository has been deleted** and
-no longer exists. Do not waste time trying to `pip install` or `git clone` it —
-it will fail every time with a 404.
+Degradation from η = 0.3 to η = 0.9 (i.e. 90% of test samples missing one modality) is
+**≈ 4.6 pp** I-AUROC. Full grid in `ablation_results_v5_missing_rate/`.
 
-This repo already includes the fix: `knn_cuda_replacement.py` at the project root
-is a from-scratch, dependency-free replacement using only `torch.cdist` and
-`torch.topk`, producing mathematically equivalent output. `point_transformer.py`
-already imports from it. You don't need to do anything here — just don't be
-confused if you ever see the old import name mentioned in old logs or comments.
+### Efficiency
 
-If you ever clone this project onto a machine with a **different username**, the
-hardcoded path in `point_transformer.py`'s import line needs updating to match:
+≈ **3.5%** additional parameters over the frozen backbone; ≈ **90 images/second** inference.
 
-```python
-import sys; sys.path.insert(0, "/home/<your-username>/MISDD-MM"); from knn_cuda_replacement import KNN
-```
+### Published baseline reference (MISDD-MM, both-missing)
 
----
+| η | I-AUROC | P-AUROC | AUPRO |
+|---|---:|---:|---:|
+| 0.3 | 77.71 | 95.00 | 84.03 |
+| 0.5 | 76.95 | 93.28 | 79.79 |
+| 0.7 | 73.83 | 93.05 | 77.44 |
 
-## 8. Fix the username-dependent dataset paths
-
-`datasets/mvtec3d.py` and `datasets/eyescandies.py` both hardcode an absolute path
-containing a specific Linux username. Update both to match your actual username
-(check with `whoami`):
-
-```bash
-whoami
-sed -i 's|/home/[^/]*/mvtec3d|/home/YOUR_USERNAME/mvtec3d|' ~/MISDD-MM/datasets/mvtec3d.py
-sed -i 's|/home/[^/]*/eyescandies/Eyecandies|/home/YOUR_USERNAME/eyescandies/Eyecandies|' ~/MISDD-MM/datasets/eyescandies.py
-```
-
----
-
-## 9. Download the datasets
-
-Datasets are not stored in git — download them fresh each time.
-
-**MVTec 3D-AD** (current download link rotates; get it fresh from
-`https://www.mvtec.com/company/research/datasets/mvtec-3d-ad/downloads` if this
-one has expired):
-
-```bash
-mkdir -p ~/mvtec3d && cd ~/mvtec3d
-wget "<current MVTec 3D-AD download URL>"
-tar -xf mvtec_3d_anomaly_detection.tar.xz
-```
-
-**Eyecandies** (hosted on Google Drive — get current file IDs from
-`https://eyecan-ai.github.io/eyecandies/download`):
-
-```bash
-pip install gdown
-mkdir -p ~/eyescandies/Eyecandies && cd ~/eyescandies/Eyecandies
-gdown "https://drive.google.com/uc?id=<FILE_ID>" -O CandyCane.zip
-# repeat for all 10 categories
-```
-
-**Important — these files are actually `.tar` archives despite the `.zip`
-extension.** Use `tar`, not `unzip`:
-
-```bash
-for f in CandyCane ChocolateCookie ChocolatePraline Confetto GummyBear \
-         HazelnutTruffle LicoriceSandwich Lollipop Marshmallow PeppermintCandy; do
-  tar -xf "${f}.zip"
-done
-```
-
-Each archive extracts into a nested `Eyecandies/<CategoryName>/` subfolder rather
-than directly into the category folder. Flatten it:
-
-```bash
-mv Eyecandies/* .
-rmdir Eyecandies
-rm *.zip
-```
-
-You should end up with `~/eyescandies/Eyecandies/<CategoryName>/{train,val,test_public,test_private}/`
-for all 10 categories, with no leftover `.zip` files or nested `Eyecandies/`
-directories.
-
-If a single category's Google Drive download fails with "too many users have
-viewed or downloaded this file recently," download it manually from a browser
-instead and copy it in from Windows:
-
-```bash
-cp /mnt/c/Users/<your-windows-username>/Downloads/<Category>.tar ~/eyescandies/Eyecandies/
-```
+Note the corrected baseline in this repository reaches **76.00** at η = 0.7 under a *stricter*
+protocol (final-epoch evaluation, no best-epoch test-set selection) — above the published
+73.83.
 
 ---
 
-## 10. Always pass `--gpu-id 0` explicitly
+## The audit: what was wrong with V1–V3
 
-`train_cls.py` defaults to `--gpu-id 1`. On a single-GPU machine, your GPU is
-device index **0**, and this default will produce a confusing
-`RuntimeError: No CUDA GPUs are available` error that looks exactly like a driver
-or WSL problem — even though CUDA itself is working fine. This cost a significant
-amount of debugging time to trace back to one default argument value.
+Full detail in `PIPELINE_AUDIT_FINDINGS.md`. Summary of confirmed defects, each verified
+against the exact code that produced the affected results:
 
-**Always include `--gpu-id 0` on any single-GPU machine:**
+| ID | Defect | Consequence |
+|---|---|---|
+| A3 | `@torch.no_grad()` on `encode_image_missing` | Main loss reached **0 of 171** prompt-learner parameters. Innovations 1, 2, 4 were frozen at random init throughout their own ablations. Only the auxiliary loss trained anything (158/171). |
+| A4 | `cls` test branch called `encode_image()` without prompts | The headline I-AUROC never touched the missing-aware prompts at inference. |
+| — | Innovation 1 injected into surgery path `x` | Attention never reads that tensor. A ×1000 perturbation changed the output by 0.000000 — a complete no-op. Now injects into the attended path `x_ori` (MaPLe-style). |
+| A1 | MVTec3D `good`-split globs unsorted | RGB and depth paired from **different object instances** for ~99% of training samples. |
+| A2 | Test images fed as BGR, gallery built as RGB | Channel mismatch at inference across all configs. |
+| B2 | Best-epoch-on-test-set selection | Test-set model selection inflating every reported number. |
+| — | Trailing LayerNorm in residual modules | Output magnitude invariant to weight magnitude, nullifying the documented near-zero initialisation. |
 
-```bash
-python train_cls.py --dataset mvtec3d --class_name bagel \
-    --missing_type both --missing_rate 0.7 --seed 111 --gpu-id 0
+### The LayerNorm finding, stated precisely
+
+The correlated-prompt residual begins at **0.7–0.8%** of its host pathway (as designed), but
+the trailing LayerNorm decouples output scale from weight scale, so training inflates the
+residual **260–615×** relative to its own initialisation — reaching **0.58–2.2×** the pathway
+it was meant to gently perturb. The dynamic residual reaches **20×** its base prompt, having
+started at 0.38–0.45× rather than near zero.
+
+Growth figures measured on peach and cookie (damage-selected classes) under a reproduction
+tolerance of ≤ 2.4e-4 relative; see provenance notes below.
+
+**Fix:** LayerScale — a learnable per-layer scalar `γ` (init 1e-2) after the LayerNorm,
+restoring the module's stated design rather than merely constraining it.
+
+### What the optimiser does with the fix
+
+Across all 10 categories, the learned γ suppresses layers 1–4 and grows only at layer 5:
+
+```
+per-layer mean γ: [0.0100, 0.0068, 0.0084, 0.0080, 0.0073, 0.1275]
+layer-5 range across classes: 0.1124 – 0.1500  (10/10 classes)
 ```
 
-Every script in this repo already includes this flag where needed. If you write a
-new script, don't forget it.
+The optimiser consistently wants a modest final-layer residual and actively suppresses the
+deep chain. This reproduces on every class independently.
+
+### The ceiling, measured
+
+Four-quadrant probe: score {trained, init} prompts × {trained, init} gallery, on key-exact
+checkpoints.
+
+| Class | PP | 00 | P0 | 0P | Spearman(PP,00) |
+|---|---:|---:|---:|---:|---:|
+| bagel | 87.45 | 87.40 | 87.24 | 87.19 | 0.9966 |
+| cookie | 85.09 | 85.68 | 84.85 | 86.17 | 0.9913 |
+| peach | 78.92 | 80.48 | 78.01 | 79.97 | 0.9900 |
+| cable_gland | 80.30 | 79.80 | 77.39 | 79.86 | 0.9903 |
+| tire | 64.55 | 64.92 | 65.29 | 64.60 | 0.9941 |
+| potato | 54.55 | 56.18 | 54.74 | 56.18 | 0.9888 |
+
+All quadrants within ~1.5 pp; rank correlation ≥ 0.99. Prompt training moves mid-features by
+~35% of within-class spread, but the movement is **rank-preserving and defect-blind** (normal
+and anomalous shift norms within 6%, shift cosine = 1.000).
+
+**Scope of the claim:** the *all-normal training objective* cannot improve the map branch
+(best observed +0.1 pp, worst −1.6 pp). This does **not** claim that no prompt objective can —
+an anomaly-aware objective was tested separately (below).
+
+### Gate 3: the anomaly-aware objective
+
+Because the ceiling result is specific to all-normal training, a synthetic-anomaly contrastive
+prompt objective was designed and tested — CutPaste patch transplants and smooth-noise blob
+corruptions with geometry-consistent depth offsets, driving a patch-level contrastive term.
+
+A success criterion was **pre-registered before the experiment ran**: > +0.5 pp mean over the
+campaign's own seed-111 reference, with no class regressing more than 1 pp. The pilot
+(4 classes, seed 111) did not meet it. Results in `result_diag_gate3_*/`, design in
+`GATE3_PILOT_DESIGN.md`.
 
 ---
 
-## 11. Running long training jobs without losing them
+## Provenance
 
-A training sweep across all classes and seeds takes hours. A few real failure
-modes to know about, all observed firsthand on this exact setup:
+| Ref | Hash | Covers |
+|---|---|---|
+| `main` | `55909df` | V5 final protocol results, missing-rate grid, Gate-3 pilot |
+| tag `v4-campaign-code` | `29251d7` | Exact code that produced the V4 results |
+| branch `v4-campaign-reconstruction` | `29251d7` | Same |
+| — | `43d6615` | V4 architectural rebuild (see caveat) |
+| — | `49f01a9` | Pre-audit code, used for V1–V3 gradient-census verification |
 
-- **`tail -f some_log.txt` followed by Ctrl+C does not stop training** — but get
-  in the habit of using `tail -n 30 file.txt` (no `-f`) instead, so there is never
-  anything in the foreground to accidentally interrupt.
-- **Locking the Windows screen can interrupt the WSL session** in a way that
-  kills background training, even with sleep disabled. Either leave the screen
-  unlocked, or just let the display turn off naturally — that does *not* kill
-  anything.
-- **GPU power capping under sustained load can cause
-  `CUDA error: CUBLAS_STATUS_EXECUTION_FAILED`.** If this happens, run
-  `wsl --shutdown` from PowerShell, wait 15 seconds, reopen Ubuntu, and check power
-  cap status before relaunching:
-```bash
-  /usr/lib/wsl/lib/nvidia-smi -q -d TEMPERATURE,PERFORMANCE | grep -A3 "Power Cap"
-```
-  In Windows, set NVIDIA Control Panel → Manage 3D Settings → Power management
-  mode to **"Prefer Maximum Performance."**
+**Two disclosures a reviewer should have:**
 
-**Always launch long jobs like this**, so they survive a closed terminal:
+1. **`43d6615` alone does not reproduce the V4 results.** That commit steps the optimizer per
+   microbatch; the V4 campaign ran a gradient-accumulation loop (one step per epoch) that was
+   uncommitted at the time. The tag `v4-campaign-code` reconstructs the exact campaign code.
+   Reconstruction was validated against surviving probe receipts to ≤ 2.4e-4 relative
+   deviation — not bit-exact, because the trainer is bit-stable within a process context but
+   not across them (the campaign ran under systemd). All cited ratios are unaffected at three
+   significant figures.
 
-```bash
-nohup bash your_script.sh > your_log.txt 2>&1 &
-disown
-```
+2. **The V5 3-NN campaign spans two tree states.** The synthetic-anomaly module was added
+   mid-campaign. It is flag-gated and default-off, leaving the campaign's code path unchanged,
+   but the hash differs between early and late runs.
 
-**Always verify a run actually completed and didn't silently skip a category.**
-A script reporting "SAVED" and "COMPLETE" does not guarantee every row is real —
-check for zero-value rows before trusting any result file:
-
-```bash
-awk -F',' 'NR>1 && ($2==0 || $3==0 || $4==0) {print "ZERO FOUND:", $0}' path/to/results.csv
-```
-
-If a category silently produced a `0.00` row with no visible error, the
-individual class probably still works fine in isolation — run it standalone,
-let it finish completely, and manually patch the correct value back into the CSV.
+**Checkpoints (`.pt`) are not tracked** — they are large binaries and are gitignored. All
+reported numbers live in the CSVs. Reproducing a number means retraining from the pinned code.
 
 ---
 
-## 12. Known result: seed-to-seed variance is much higher on Eyecandies than MVTec
+## Environment
 
-This is expected, not a bug. MVTec 3D-AD shows under 1 percentage point of
-standard deviation across seeds 111/222/333. Eyecandies shows roughly 5 points of
-standard deviation across the same three seeds, with seed 333 in particular
-landing notably higher than 111/222 across every ablation configuration. This was
-investigated thoroughly — the new machine reproduces historical results within
-0.2 points on a direct seed/category comparison, ruling out a hardware or
-environment cause. The most likely explanation is Eyecandies' smaller per-category
-test sets making individual seeds more impactful on the aggregate metric. Report
-this variance honestly rather than treating any single seed as definitive.
+```
+OS          Windows 11 + WSL2 Ubuntu 22.04
+GPU         NVIDIA RTX 4090 (24 GB)
+CUDA        11.8
+Python      3.11 (conda env: ramsdd)
+PyTorch     2.2.0+cu118
+Backbone    CLIP ViT-B-16-plus-240 (frozen)
+```
+
+**Hard constraints:**
+- `numpy < 2` — do not upgrade; do not rebuild `pointnet2_ops`
+- `WANDB_MODE=offline`
+- Never run heavy builds from `/mnt/c/` paths
+- **Signing out of Windows kills WSL2 entirely**, regardless of systemd linger. Lock the
+  screen (Win+L) instead. Long campaigns will die otherwise.
 
 ---
 
-## 13. Quick reference — daily startup
+## Running experiments
 
-Once everything above is done once, your normal day-to-day startup is:
-
-```powershell
-wsl -d Ubuntu-22.04
-```
-
-Add this to your `~/.bashrc` once so every new terminal lands you in the right
-place automatically:
+Training runs under a systemd user service so it survives terminal disconnection.
 
 ```bash
-echo "cd ~/MISDD-MM" >> ~/.bashrc
-echo "conda activate misdd_mm" >> ~/.bashrc
+conda activate ramsdd
+
+# Launch a campaign
+echo "v5_3nn" > ~/MISDD-MM/.current_segment
+systemctl --user start misdd-training.service
+
+# Monitor
+systemctl --user status misdd-training.service
+tail -f ~/MISDD-MM/systemd_training.log
 ```
 
-After that, opening WSL alone gets you straight to a ready-to-work terminal.
+Single run, directly:
+
+```bash
+WANDB_MODE=offline python train_cls.py \
+    --dataset mvtec3d --class_name bagel \
+    --missing_type both --missing_rate 0.7 \
+    --seed 111 --gpu-id 0 \
+    --Epoch 25 --batch-size 32 --max_norm 1.0 \
+    --img_score_mode map --map_knn 3
+```
+
+### Key flags
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--missing_type` | — | `both` = either modality may be missing (never both on one sample) |
+| `--missing_rate` | — | η; total fraction of samples with a missing modality |
+| `--img_score_mode` | `harmonic` | `map` uses the gallery branch only; `harmonic` fuses with the textual branch |
+| `--map_knn` | `1` | Gallery neighbours; **3** is the adopted setting |
+| `--Epoch` | 50 | **25** is the protocol setting — text anchors overfit by 50 |
+| `--syn_anomaly` | off | Enables the Gate-3 synthetic-anomaly objective |
+
+### Protocol notes
+
+- **Batch size 32 with gradient accumulation → exactly one optimizer step per epoch.**
+  This reproduces the original full-batch budget (50 steps per class) while fitting in memory.
+- **Evaluation runs once, at the final epoch.** No best-epoch selection.
+- `--missing_type both` means *either* modality may be missing on a given sample, never both
+  simultaneously. Total missing fraction is exactly η.
+- Training runs with `model.eval()` throughout — intentional for frozen-CLIP prompt tuning.
+
+---
+
+## Known dead code and cruft
+
+Kept for history, but not part of any result:
+
+- `test_cls.py`, `test_seg.py`, `train_seg.py` — stale signatures, would crash on first batch
+- `params.py` — imports a nonexistent `PromptAD` package
+- `Pointnet2_PyTorch/`, `utils/pointnet2_utils.py` — point-cloud path is disabled everywhere
+- `static/`, `index.html` — project-page template, unused
+- `MISDD_MM/model_backup_*.py`, `ablation_models/*.py.bak` — development snapshots
+- `RESULTS.md` — V1–V3 era numbers, superseded by this file
+- Most `run_*.sh` scripts — superseded by the `run_v5_*` family
+- `utils/__pycache__/` — currently tracked in error; should be untracked
+
+---
+
+## Citation context
+
+This work extends:
+
+> Resilient Multimodal Industrial Surface Defect Detection With Uncertain Sensors Availability
+> (MISDD-MM)
+
+Prompt architecture draws on **MaPLe** (multi-modal prompt learning) and **Deep Correlated
+Prompting**. Synthetic anomaly generation follows **CutPaste** and **DRAEM** conventions.
+LayerScale follows **CaiT** (Touvron et al.).

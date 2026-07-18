@@ -1,3 +1,10 @@
+> ⚠ **SUPERSEDED.** These are V1–V3 results, which the pipeline audit found to be
+> measurement artifacts arising from a blocked gradient path, a dead injection path,
+> and best-epoch test-set selection. See `README.md` for current results and
+> `PIPELINE_AUDIT_FINDINGS.md` for the audit.
+
+---
+
 # Experimental Results
 
 This document records every verified result produced for this project. All numbers
