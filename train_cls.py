@@ -132,9 +132,11 @@ def fit(model,
     criterion = nn.CrossEntropyLoss().to(device)
     criterion_tip = TripletLoss(margin=0.0)
 
+    n_train = len(train_data.dataset)
     for epoch in range(args.Epoch):
-        # desc=f'Epoch {args.dataset}/{args.class_name}, {args.k-shot}'
-        # TRAIN
+        # TRAIN — one optimizer step per epoch, accumulated over microbatches
+        # (ported from the campaign-time working tree; 43d6615 stepped per batch)
+        optimizer.zero_grad()
         for (img, pc, depth, mask, label, name, img_type, missing_flag) in tqdm(train_data, ncols=100, desc=f'{args.dataset}/{args.class_name}, missing {args.missing_type}-{args.missing_rate}, Epoch {epoch}/{args.Epoch}, training'):
             img = [model.img_transform(Image.fromarray(cv2.cvtColor(f.numpy(), cv2.COLOR_BGR2RGB))) for f in img]
             # pc = [p for p in pc]
@@ -155,8 +157,6 @@ def fit(model,
             img_normal_text_prompt, img_abnormal_text_prompt_manual, img_abnormal_text_prompt_learned = model.img_prompt_learner()
             depth_normal_text_prompt, depth_abnormal_text_prompt_manual, depth_abnormal_text_prompt_learned = model.depth_prompt_learner()
             all_prompts_image, all_prompts_depth = model.missing_prompt_learner(missing_flag, raw_image=img, raw_depth=depth)
-
-            optimizer.zero_grad()
 
             img_feature, _, _, _ = model.encode_image_missing(img, all_prompts_image, missing_flag)
             img_normal_text_features = model.encode_text_embedding(img_normal_text_prompt, model.img_tokenized_normal_prompts)
@@ -225,15 +225,18 @@ def fit(model,
                 'gran_weight': gran_weight,
             })
 
-            loss.backward()
-            # clip strength is set explicitly per run via --max_norm (no hidden config detection)
-            _clip_norm = args.max_norm
-            torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
-            torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
-            torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
-            if hasattr(model, 'granular_text_guidance'):
-                torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
-            optimizer.step()
+            # accumulate a full-batch-equivalent gradient: weight each microbatch
+            # by its share of the training set
+            (loss * (img.shape[0] / n_train)).backward()
+
+        # clip strength is set explicitly per run via --max_norm (no hidden config detection)
+        _clip_norm = args.max_norm
+        torch.nn.utils.clip_grad_norm_(model.missing_prompt_learner.parameters(), max_norm=_clip_norm)
+        torch.nn.utils.clip_grad_norm_(model.img_prompt_learner.parameters(), max_norm=_clip_norm)
+        torch.nn.utils.clip_grad_norm_(model.depth_prompt_learner.parameters(), max_norm=_clip_norm)
+        if hasattr(model, 'granular_text_guidance'):
+            torch.nn.utils.clip_grad_norm_(model.granular_text_guidance.parameters(), max_norm=_clip_norm)
+        optimizer.step()
         # Log gradient diagnostics once per epoch (grads from the last batch are still present)
         if args.grad_diag:
             _diag_csv = check_path.replace('.pt', f'_grad_diag_seed{args.seed}.csv')
