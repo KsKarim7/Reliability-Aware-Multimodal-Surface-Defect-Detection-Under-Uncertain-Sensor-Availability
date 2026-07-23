@@ -311,6 +311,9 @@ class DynamicPromptGenerator(nn.Module):
         self.fc1 = nn.Linear(spatial_feat, hidden)
         self.fc2 = nn.Linear(hidden, prompt_dim)
         self.ln  = nn.LayerNorm(prompt_dim)
+        # the trailing LayerNorm rescales to unit variance and defeats the
+        # near-zero weight init, so the residual scale must be learned explicitly
+        self.gamma = nn.Parameter(torch.full((1,), 1e-2))
         nn.init.xavier_uniform_(self.fc1.weight, gain=0.01)
         nn.init.zeros_(self.fc1.bias)
         nn.init.xavier_uniform_(self.fc2.weight, gain=0.01)
@@ -320,7 +323,7 @@ class DynamicPromptGenerator(nn.Module):
         if x.dim() == 3:
             x = x.unsqueeze(0)
         pooled = self.pool(x).flatten(1)
-        out = self.ln(self.fc2(F.gelu(self.fc1(pooled))))
+        out = self.gamma * self.ln(self.fc2(F.gelu(self.fc1(pooled))))
         return out.expand(self.prompt_length, -1)
 
 class CorrelatedPromptMLP(nn.Module):
@@ -332,13 +335,16 @@ class CorrelatedPromptMLP(nn.Module):
         self.fc1 = nn.Linear(dim, dim // reduction)
         self.fc2 = nn.Linear(dim // reduction, dim)
         self.ln  = nn.LayerNorm(dim)
+        # same LayerScale as DynamicPromptGenerator: without it the trailing
+        # LayerNorm makes this "residual" as large as the main pathway from step 0
+        self.gamma = nn.Parameter(torch.full((1,), 1e-2))
         nn.init.xavier_uniform_(self.fc1.weight, gain=0.01)
         nn.init.zeros_(self.fc1.bias)
         nn.init.xavier_uniform_(self.fc2.weight, gain=0.01)
         nn.init.zeros_(self.fc2.bias)
 
     def forward(self, x):
-        return self.ln(self.fc2(F.gelu(self.fc1(x))))
+        return self.gamma * self.ln(self.fc2(F.gelu(self.fc1(x))))
 
 
 class Missing_PromptLearner(nn.Module):
@@ -413,9 +419,14 @@ class Missing_PromptLearner(nn.Module):
                 common_prompt = self.common_prompt_image
             else:  # both present — Innovation 4: quality-weighted blending
                 if raw_image is not None and raw_depth is not None:
-                    initial_prompt_image = self.image_prompt_complete
-                    initial_prompt_depth = self.depth_prompt_complete
-                    common_prompt = self.common_prompt_complete
+                    w_rgb, w_dep = self.sensor_sentinel.get_quality_weights(
+                        raw_image[i], raw_depth[i], mt_i)
+                    initial_prompt_image = (w_rgb * self.image_prompt_complete +
+                                           (1.0 - w_rgb) * self.image_prompt_missing)
+                    initial_prompt_depth = (w_dep * self.depth_prompt_complete +
+                                           (1.0 - w_dep) * self.depth_prompt_missing)
+                    common_prompt = (w_rgb * self.common_prompt_image +
+                                    w_dep * self.common_prompt_depth)
                 else:
                     initial_prompt_image = self.image_prompt_complete
                     initial_prompt_depth = self.depth_prompt_complete
@@ -425,13 +436,11 @@ class Missing_PromptLearner(nn.Module):
             base_depth = self.compound_prompt_projections_depth[0](self.layernorm_depth[0](torch.cat([initial_prompt_image, initial_prompt_depth], -1)))
             # Innovation 2: add dynamic input-conditioned residual if raw inputs available
             if raw_image is not None:
-                pass
-                # dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
-                # base_image = base_image + dyn_image
+                dyn_image = self.dynamic_image_gen(raw_image[i].float().to(base_image.device))
+                base_image = base_image + dyn_image
             if raw_depth is not None:
-                pass
-                # dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
-                # base_depth = base_depth + dyn_depth
+                dyn_depth = self.dynamic_depth_gen(raw_depth[i].float().to(base_depth.device))
+                base_depth = base_depth + dyn_depth
             all_prompts_image[0].append(base_image)
             all_prompts_depth[0].append(base_depth)
             # generate the prompts of the rest layers
@@ -442,10 +451,10 @@ class Missing_PromptLearner(nn.Module):
                 cross_depth = self.compound_prompt_projections_depth[index](
                     self.layernorm_depth[index](torch.cat([all_prompts_image[index-1][-1], all_prompts_depth[index-1][-1]], -1)))
                 # DCP-style intra-modal self-correlation (residual addition)
-                # corr_image = self.correlated_prompt_image[index](all_prompts_image[index-1][-1])
-                # corr_depth = self.correlated_prompt_depth[index](all_prompts_depth[index-1][-1])
-                all_prompts_image[index].append(cross_image)
-                all_prompts_depth[index].append(cross_depth)
+                corr_image = self.correlated_prompt_image[index](all_prompts_image[index-1][-1])
+                corr_depth = self.correlated_prompt_depth[index](all_prompts_depth[index-1][-1])
+                all_prompts_image[index].append(cross_image + corr_image)
+                all_prompts_depth[index].append(cross_depth + corr_depth)
             all_prompts_image[0][i] = torch.cat([all_prompts_image[0][i], self.common_prompt_projection_image(common_prompt)], 0)
             all_prompts_depth[0][i] = torch.cat([all_prompts_depth[0][i], self.common_prompt_projection_depth(common_prompt)], 0)
         # generate the prompts in each layer as a tensor [B, L, C]
@@ -468,6 +477,9 @@ class MISDD_MM(torch.nn.Module):
         self.shot = kwargs['size']
         self.missing_prompt_length = kwargs['missing_prompt_length']
         self.missing_prompt_depth = kwargs['missing_prompt_depth']
+        # k nearest gallery patches per test patch; k=3 smooths the distance
+        # estimate (selected on seed 111, frozen before seeds 222/333)
+        self.map_knn = kwargs.get('map_knn', 1)
 
         self.out_size_h = out_size_h
         self.out_size_w = out_size_w
@@ -558,7 +570,7 @@ class MISDD_MM(torch.nn.Module):
         self.depth_tokenized_abnormal_prompts_learned = self.depth_prompt_learner.tokenized_abnormal_prompts_learned
         self.depth_tokenized_abnormal_prompts = torch.cat([self.depth_tokenized_abnormal_prompts_manual, self.depth_tokenized_abnormal_prompts_learned], dim=0)
         # Innovation 3: granular text guidance module
-        # self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
+        self.granular_text_guidance = GranularTextGuidance(model, class_name, self.precision)
 
         self.average = torch.nn.AvgPool2d(3, stride=1) # torch.nn.AvgPool2d(1, stride=1) #
         self.resize = torch.nn.AdaptiveAvgPool2d((self.grid_size[0], self.grid_size[1]))
@@ -744,26 +756,32 @@ class MISDD_MM(torch.nn.Module):
         else:
             assert 'task error'
 
+    def _gallery_distance(self, dists):
+        if self.map_knn > 1:
+            return dists.topk(self.map_knn, dim=-1, largest=False)[0].mean(dim=-1)
+        score, _ = dists.min(dim=-1)
+        return score
+
     def calculate_img_anomaly_score(self, img_mid_features1, img_mid_features2):
         N = img_mid_features1.shape[0]
 
-        score1, _ = (1.0 - img_mid_features1 @ self.img_feature_gallery1.t()).min(dim=-1)
+        score1 = self._gallery_distance(1.0 - img_mid_features1 @ self.img_feature_gallery1.t())
         score1 /= 2.0
 
-        score2, _ = (1.0 - img_mid_features2 @ self.img_feature_gallery2.t()).min(dim=-1)
+        score2 = self._gallery_distance(1.0 - img_mid_features2 @ self.img_feature_gallery2.t())
         score2 /= 2.0
 
         score = torch.zeros((N, self.grid_size[0] * self.grid_size[1])) + 0.5 * (score1 + score2).cpu()
 
         return score.reshape((N, self.grid_size[0], self.grid_size[1])).unsqueeze(1)
-    
+
     def calculate_depth_anomaly_score(self, depth_mid_features1, depth_mid_features2):
         N = depth_mid_features1.shape[0]
 
-        score1, _ = (1.0 - depth_mid_features1 @ self.depth_feature_gallery1.t()).min(dim=-1)
+        score1 = self._gallery_distance(1.0 - depth_mid_features1 @ self.depth_feature_gallery1.t())
         score1 /= 2.0
 
-        score2, _ = (1.0 - depth_mid_features2 @ self.depth_feature_gallery2.t()).min(dim=-1)
+        score2 = self._gallery_distance(1.0 - depth_mid_features2 @ self.depth_feature_gallery2.t())
         score2 /= 2.0
 
         score = torch.zeros((N, self.grid_size[0] * self.grid_size[1])) + 0.5 * (score1 + score2).cpu()

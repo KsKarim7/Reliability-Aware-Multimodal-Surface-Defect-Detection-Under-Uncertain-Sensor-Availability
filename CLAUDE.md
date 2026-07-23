@@ -465,6 +465,15 @@ claim is "this route, as implemented, doesn't break the ceiling."
 - 8-class retraining under the tagged code runs at the Eyescandies seed-111→222
   boundary (pause service, ~1.6h retrain + probes, resume — no lost work).
 
+**10-CLASS INFLATION TABLE COMPLETE (2026-07-20, tagged code, all key-exact):**
+corr (innov1): A growth-vs-init 239–616× (median 373; peach 593/cookie 615 are
+MID-PACK — n=2 damage-selection worry resolved), B trained/pathway 0.49–2.76
+(median 0.92), C init/pathway 0.0070–0.0077 (dead flat all 10). dyn (innov2):
+A 36–69×, B 18.6–24.5, C 0.35–0.54 (init never near-zero, all 10). Supporting
+evidence only; growth range labeled "measured under reproduction tolerance";
+load-bearing claim = B (trained/pathway), corroborated by γ profile from original
+artifacts. Probe: `/tmp/inflation_table.py` (recreate from git history if wiped).
+
 ### V4 CHECKPOINT REPRODUCTION (2026-07-16) — protocol identified, tolerance ruling PENDING
 
 v5k overwrote all V4-era checkpoints (shared paths — campaign ckpts are ephemeral!).
@@ -499,11 +508,23 @@ the interrupted config; all 18 runs clean.
 compound projections 3.62M, text learners 20K). Latency 11.1 ms/img full cls path
 (~90 img/s); prompt system 1.87 ms/img = 16.9% of total.
 
-**Eyescandies campaign RUNNING since 2026-07-18 21:21** (`.current_segment`=v5ec_all):
-7 configs × seeds 111/222/333, final protocol, `run_v5_eyescandies.sh`, results →
-`ablation_results_v5_eyescandies/seed{s}/`, logs → `eyescandies_v5_seed{s}.log`,
-~2 days, seeds chain automatically. Loader pairing audited (sorted glob, derived
-depth paths — safe).
+**Eyescandies campaign COMPLETE (2026-07-23 03:53)** — 21/21 clean, final protocol.
+3-seed mean I-AUROC:
+
+| config | s111 | s222 | s333 | mean | vs base |
+|---|---:|---:|---:|---:|---:|
+| baseline | 65.24 | 67.26 | 78.36 | 70.29 | — |
+| innov1_only | 64.81 | 67.11 | 78.27 | 70.06 | −0.22 |
+| innov2_only | 65.31 | 67.21 | 78.41 | 70.31 | +0.02 |
+| innov3_only | 65.23 | 67.27 | 78.35 | 70.28 | −0.00 |
+| innov4_only | 65.00 | 67.19 | 78.44 | 70.21 | −0.08 |
+| innov2_3_4 | 65.07 | 67.11 | 78.48 | 70.22 | −0.07 |
+| full_model | 65.16 | 67.01 | 78.45 | 70.21 | −0.08 |
+
+Second dataset independently reproduces the ceiling: all configs within ±0.22pp
+of baseline (3-seed mean); per-seed spread ≤0.50pp; huge seed variance (65/67/78)
+is dataset difficulty, not config. The flat line holds on BOTH datasets, 3 seeds
+each. GATE 4 COMPLETE. All V5-era data collection done.
 3. **Gate 4**: Eyescandies on final protocol + efficiency analysis + missing-rate curve
 4. **Paper narrative**: measurement spine (verified) + ceiling + gamma profile +
    fusion/aggregation audits are the empirical core; git commit needed (V5 changes
