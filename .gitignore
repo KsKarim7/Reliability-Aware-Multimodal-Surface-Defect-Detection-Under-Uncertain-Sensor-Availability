@@ -46,8 +46,6 @@ eyescandies_seed333_fullmodel_log4.txt
 eyescandies_seed333_log.txt
 eyescandies_seed333_resume_log.txt
 logs/
-result/eyescandies/both/0.7/csv/Seed_111-results.csv
-result/eyescandies/both/0.7/csv/Seed_333-results.csv
 result/mvtec3d/both/*/checkpoint/
 utils/__pycache__/
 venv.bak/

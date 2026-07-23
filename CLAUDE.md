@@ -455,13 +455,14 @@ claim is "this route, as implemented, doesn't break the ceiling."
 - **Tagged commit `v4-campaign-code` (29251d7)** on branch
   `v4-campaign-reconstruction`: 43d6615 + accumulation loop + model.py restored
   from model_full.py. This is the citable hash for all V4 numbers.
-- **Provenance flags (results whose producing code is uncommitted):**
-  V5 1-NN (seed111), v5k 3-seed table, missing-rate sweep, Gate-3 pilot, and
-  the running Eyescandies campaign all ran from the uncommitted working tree
-  (behaviorally = current tree with default flags; v5k additionally spanned a
-  mid-campaign flag-gated edit — syn-anomaly module added Jul 16 while later
-  configs ran; default-off, behaviorally identical). **Recommend: commit the
-  current main tree now** to give every V5-era number one citable hash.
+- **Provenance flags — RESOLVED 2026-07-23**: the whole V5-era working tree is
+  committed on `main` as `3fa1d5a` ("Complete empirical phase: Eyescandies 3-seed,
+  V4 inflation table, integrity audit"), preceded by `55909df` (V5 final-protocol
+  results). All 60 result CSVs (21 v5_3nn + 18 missing-rate + 21 eyescandies)
+  tracked; working tree clean. V4 numbers cite tag `v4-campaign-code` (29251d7).
+  Every paper number now maps to a hash. (Historical note: these results were
+  *produced* by the then-uncommitted tree; behaviorally identical to `3fa1d5a`
+  with default flags.)
 - 8-class retraining under the tagged code runs at the Eyescandies seed-111→222
   boundary (pause service, ~1.6h retrain + probes, resume — no lost work).
 
