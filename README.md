@@ -151,23 +151,51 @@ configurations are statistically indistinguishable. Seeds 222 and 333 are in
 
 ### Scoring improvement (evaluation-only, no retraining)
 
-Replacing 1-NN minimum gallery distance with 3-NN mean distance: **+0.89 pp** mean,
-8/10 categories improve. `k = 3` was selected on seed 111 alone and frozen before seeds
-222/333 ran, so those seeds are held-out confirmation.
+Replacing 1-NN minimum gallery distance with 3-NN mean distance. `k = 3` was selected on
+**seed 111 alone** and frozen before seeds 222/333 ran.
+
+**Scope of the claim (corrected 2026-08-21 by `STATISTICAL_VALIDATION_REPORT.md` §6):** seeds
+222/333 have **no k = 1 scores** — `ablation_results_v5/` contains seed 111 only, and the
+checkpoints needed to rescore them at k = 1 no longer exist. They are therefore *later runs at
+the frozen setting*, **not held-out confirmation of the k choice**. Establishing held-out
+confirmation would require retraining those seeds.
+
+The gain is **configuration-agnostic**, as an evaluation-time smoothing should be — every config
+improves by a similar amount on the selection seed (`ablation_results_v5/seed111/` vs
+`ablation_results_v5_3nn/seed111/`):
+
+| config | 1-NN | 3-NN | Δ |
+|---|---:|---:|---:|
+| baseline | 76.74 | 77.57 | +0.84 |
+| innov1_only | 76.51 | 77.52 | +1.01 |
+| innov2_only | 76.74 | 77.60 | +0.86 |
+| innov3_only | 76.75 | 77.58 | +0.83 |
+| innov4_only | 76.88 | 77.58 | +0.70 |
+| innov2_3_4 | 76.88 | 77.57 | +0.69 |
+| full_model | 76.61 | 77.48 | +0.87 |
+
+Per-class, baseline config, seed 111 — **+0.84 pp mean, 9/10 categories improve**. Note the
+concentration: **peach alone accounts for 2.54 of the 8.37 pp summed gain (30%)**, and excluding
+it drops the mean from +0.84 to **+0.65 pp**:
 
 | Class | 1-NN | 3-NN | Δ |
 |---|---:|---:|---:|
-| bagel | 87.45 | 87.40 | −0.05 |
-| cable_gland | 80.30 | 81.34 | +1.04 |
-| carrot | 79.52 | 79.24 | −0.28 |
-| cookie | 85.09 | 86.30 | +1.21 |
-| dowel | 79.88 | 80.36 | +0.48 |
-| foam | 70.88 | 71.75 | +0.87 |
-| peach | 78.92 | 81.79 | +2.87 |
-| potato | 54.55 | 56.23 | +1.68 |
-| rope | 86.23 | 86.78 | +0.54 |
-| tire | 64.55 | 65.10 | +0.55 |
-| **mean** | **76.74** | **77.63** | **+0.89** |
+| bagel | 86.98 | 87.40 | +0.42 |
+| cable_gland | 80.51 | 82.27 | +1.76 |
+| carrot | 79.57 | 78.73 | −0.84 |
+| cookie | 84.19 | 85.09 | +0.90 |
+| dowel | 79.59 | 80.25 | +0.66 |
+| foam | 70.69 | 71.94 | +1.25 |
+| peach | 78.77 | 81.31 | +2.54 |
+| potato | 55.78 | 56.18 | +0.40 |
+| rope | 86.14 | 86.87 | +0.73 |
+| tire | 65.15 | 65.70 | +0.55 |
+| **mean** | **76.74** | **77.57** | **+0.84** |
+
+> A previous version of this section reported **+0.89 pp / 8-of-10** with a different per-class
+> table and described seeds 222/333 as held-out confirmation. Those figures came from an ad-hoc
+> rescoring probe over checkpoints that no longer exist and **cannot be reproduced from any
+> committed artifact**; the table above is computed directly from the committed campaign CSVs.
 
 ### Robustness under sensor loss
 
