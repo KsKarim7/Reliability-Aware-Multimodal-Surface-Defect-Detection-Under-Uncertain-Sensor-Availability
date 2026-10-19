@@ -4,8 +4,11 @@ Research codebase extending **MISDD-MM** for industrial surface defect detection
 data is partially missing. RGB and depth images are processed by a frozen CLIP backbone with
 prompt tuning; the system is evaluated under simulated sensor loss at rates of 30–90%.
 
-**Author:** Aalavi Mahin Khan, BSc, BRAC University
-**Supervisor:** F. H. Orodi
+**Author:** Khaled Saifullah Karim, BSc, BRAC University
+**Co-Author:** Aalavi Mahin Khan, BSc, BRAC University
+**Co-Author:** Fawzia Hasan Orodi, BSc, BRAC University
+**Supervisor:** Dr. Swakkhar Shatabda
+**Co-Supervisor:** Shoaib Ahmed Dipu, BSc
 **Datasets:** MVTec 3D-AD (10 categories), Eyecandies (10 categories)
 
 ---
